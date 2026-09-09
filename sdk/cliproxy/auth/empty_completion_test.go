@@ -2272,7 +2272,10 @@ func TestReadStreamBootstrapErrorHandling(t *testing.T) {
 	})
 
 	t.Run("401 error following responses created event propagates as failover error", func(t *testing.T) {
-		err401 := &Error{HTTPStatus: http.StatusUnauthorized, Code: "invalid_api_key", Message: "Invalid token."}
+		err401 := &Error{HTTPStatus: http.StatusUnauthorized, Code: "api_key_invalid", Message: "API key not valid. Please pass a valid API key."}
+		if !isCredentialScopedError(err401) {
+			t.Fatal("fixture must be recognized as credential-scoped")
+		}
 		ch := make(chan cliproxyexecutor.StreamChunk, 2)
 		ch <- cliproxyexecutor.StreamChunk{Payload: []byte(`{"type":"response.created","response":{"id":"r1"}}`)}
 		ch <- cliproxyexecutor.StreamChunk{Err: err401}
