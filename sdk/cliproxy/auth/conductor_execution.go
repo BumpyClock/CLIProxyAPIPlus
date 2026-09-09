@@ -147,7 +147,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
 		roundOpts = withExcludedAuthIDs(roundOpts, tried)
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker)
+		resp, errExec := m.executeMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker, tried)
 		if errExec == nil {
 			return resp, nil
 		}
@@ -167,9 +167,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
-		for id := range roundAttempted {
-			tried[id] = struct{}{}
-		}
+
 		tried = m.resetRecoveredExclusions(tried, callerExcluded, statusCodeFromError(errExec))
 	}
 	if lastErr != nil {
@@ -220,7 +218,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
 		roundOpts = withExcludedAuthIDs(roundOpts, tried)
-		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker)
+		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker, tried)
 		if errExec == nil {
 			return resp, nil
 		}
@@ -240,9 +238,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
-		for id := range roundAttempted {
-			tried[id] = struct{}{}
-		}
+
 		tried = m.resetRecoveredExclusions(tried, callerExcluded, statusCodeFromError(errExec))
 	}
 	if lastErr != nil {
@@ -290,7 +286,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
 		roundOpts = withExcludedAuthIDs(roundOpts, tried)
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry, tracker)
+		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry, tracker, tried)
 		if errStream == nil {
 			return result, nil
 		}
@@ -323,9 +319,6 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return nil, errWait
-		}
-		for id := range roundAttempted {
-			tried[id] = struct{}{}
 		}
 		tried = m.resetRecoveredExclusions(tried, callerExcluded, statusCodeFromError(errStream))
 		attempt++

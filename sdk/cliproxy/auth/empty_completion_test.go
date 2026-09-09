@@ -2271,6 +2271,25 @@ func TestReadStreamBootstrapErrorHandling(t *testing.T) {
 		}
 	})
 
+	t.Run("401 error following responses created event propagates as failover error", func(t *testing.T) {
+		err401 := &Error{HTTPStatus: http.StatusUnauthorized, Code: "invalid_api_key", Message: "Invalid token."}
+		ch := make(chan cliproxyexecutor.StreamChunk, 2)
+		ch <- cliproxyexecutor.StreamChunk{Payload: []byte(`{"type":"response.created","response":{"id":"r1"}}`)}
+		ch <- cliproxyexecutor.StreamChunk{Err: err401}
+		close(ch)
+
+		buffered, _, err := readStreamBootstrap(context.Background(), ch)
+		if err == nil {
+			t.Fatal("readStreamBootstrap error = nil, want err401 propagated")
+		}
+		if !errors.Is(err, err401) {
+			t.Fatalf("readStreamBootstrap error = %v, want %v", err, err401)
+		}
+		if len(buffered) != 0 {
+			t.Fatalf("len(buffered) = %d, want 0", len(buffered))
+		}
+	})
+
 	t.Run("meaningful content starts stream immediately", func(t *testing.T) {
 		ch := make(chan cliproxyexecutor.StreamChunk, 2)
 		ch <- cliproxyexecutor.StreamChunk{Payload: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")}

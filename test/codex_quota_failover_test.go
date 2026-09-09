@@ -25,6 +25,7 @@ func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			const model, siblingModel = "gpt-5.4", "gpt-5.4-mini"
 			const created = `{"type":"response.created","response":{"id":"quota-test-response"}}`
+			const delta = `{"type":"response.output_text.delta","delta":"hello"}`
 			const quota = `{"type":"usage_limit_reached","message":"You've hit your usage limit.","resets_in_seconds":3600}`
 			const completed = `{"type":"response.completed","response":{"id":"quota-test-success","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`
 			attempts := make(chan string, 8)
@@ -41,7 +42,7 @@ func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 				}
 				if transport == "sse" {
 					w.Header().Set("Content-Type", "text/event-stream")
-					if _, errWrite := fmt.Fprintf(w, "data: %s\n\ndata: %s\n\n", created, terminal); errWrite != nil {
+					if _, errWrite := fmt.Fprintf(w, "data: %s\n\ndata: %s\n\ndata: %s\n\n", created, delta, terminal); errWrite != nil {
 						t.Errorf("write SSE: %v", errWrite)
 					}
 					return
@@ -60,7 +61,7 @@ func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 					t.Errorf("read websocket request: %v", errRead)
 					return
 				}
-				for _, event := range []string{created, terminal} {
+				for _, event := range []string{created, delta, terminal} {
 					if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(event)); errWrite != nil {
 						t.Errorf("write websocket event: %v", errWrite)
 						return

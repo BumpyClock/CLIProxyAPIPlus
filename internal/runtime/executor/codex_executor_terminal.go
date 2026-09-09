@@ -152,7 +152,7 @@ func codexTerminalStreamErr(eventData []byte) (statusErr, []byte, bool) {
 	if !ok || !codexTerminalStreamErrShouldHandle(body) {
 		return statusErr{}, nil, false
 	}
-	return newCodexStatusErr(codexTerminalFailureStatus(body), body), body, true
+	return newCodexStatusErr(http.StatusBadRequest, body), body, true
 }
 
 func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
@@ -186,10 +186,8 @@ func codexTerminalFailureStatus(body []byte) int {
 		return http.StatusForbidden
 	case errorType == "not_found_error", errorCode == "not_found", errorCode == "model_not_found":
 		return http.StatusNotFound
-	case errorType == "rate_limit_error", errorCode == "rate_limit_exceeded", isCodexUsageLimitError(body):
+	case errorType == "rate_limit_error", errorCode == "rate_limit_exceeded":
 		return http.StatusTooManyRequests
-	case isCodexModelCapacityError(body):
-		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadGateway
 	}
