@@ -66,6 +66,7 @@ func (e *rateLimitedExecutor) HttpRequest(context.Context, *Auth, *http.Request)
 // request-retry never ran. After the fix each entry point must execute the
 // credential twice: once in the initial pass and once after the cooldown wait.
 func TestCooldownRetryResetsExclusions(t *testing.T) {
+	t.Cleanup(SetMinQuotaCooldownFloorForTest(10 * time.Millisecond))
 	newManager := func() (*Manager, *rateLimitedExecutor) {
 		manager := NewManager(nil, nil, nil)
 		manager.SetRetryConfig(1, 5*time.Second, 0)
@@ -174,6 +175,7 @@ func (e *idRecordingRateLimitedExecutor) count(id string) int {
 // must survive the cooldown retry, otherwise a credential the caller already
 // ruled out can be executed once the wait completes.
 func TestCooldownRetryPreservesCallerExclusions(t *testing.T) {
+	t.Cleanup(SetMinQuotaCooldownFloorForTest(10 * time.Millisecond))
 	manager := NewManager(nil, nil, nil)
 	manager.SetRetryConfig(1, 5*time.Second, 0)
 	authRateLimited := &Auth{ID: "auth-429", Provider: "gemini", Status: StatusActive}
@@ -217,6 +219,7 @@ func TestCooldownRetryPreservesCallerExclusions(t *testing.T) {
 }
 
 func TestCooldownRetryPreservesConfigDisabledCoolingExclusions(t *testing.T) {
+	t.Cleanup(SetMinQuotaCooldownFloorForTest(10 * time.Millisecond))
 	t.Run("global config disable cooling retains exclusion on retry", func(t *testing.T) {
 		manager := NewManager(nil, nil, nil)
 		manager.SetConfigSnapshot(&internalconfig.Config{DisableCooling: true})

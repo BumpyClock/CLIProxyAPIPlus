@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	executionregistry "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
@@ -310,10 +311,7 @@ func (d *routeExhaustionHomeDispatcher) RPopAuth(_ context.Context, _ string, _ 
 	resp, ok := d.responses[d.callCount]
 	d.callCount++
 	if !ok || resp == "" {
-		if d.callCount > 1 && d.responses[d.callCount-2] != "" {
-			return []byte(d.responses[d.callCount-2]), nil
-		}
-		return nil, errors.New("no home auth available")
+		return nil, home.ErrAuthNotFound
 	}
 	return []byte(resp), nil
 }
@@ -321,7 +319,7 @@ func (d *routeExhaustionHomeDispatcher) RPopAuth(_ context.Context, _ string, _ 
 func TestRouteExhaustion_HomeMode(t *testing.T) {
 	mgr := NewManager(nil, nil, nil)
 	mgr.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
-	mgr.SetRetryConfig(3, 5*time.Second, 3)
+	mgr.SetRetryConfig(0, 5*time.Second, 3)
 
 	execClaude := newRouteExhaustionTestExecutor("claude")
 	execGemini := newRouteExhaustionTestExecutor("gemini")

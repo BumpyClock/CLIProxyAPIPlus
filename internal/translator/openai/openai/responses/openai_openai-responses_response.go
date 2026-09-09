@@ -341,7 +341,8 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			return
 		}
 		callID := st.FuncCallIDs[key]
-		name := st.FuncNames[key]
+		name := canonicalResponsesToolName(requestForNamespace, st.FuncNames[key])
+		st.FuncNames[key] = name
 		if !force && (callID == "" || name == "") {
 			return
 		}
@@ -725,7 +726,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 				}
 
 				// tool calls
-				if tcs := delta.Get("tool_calls"); tcs.Exists() && tcs.IsArray() {
+				if tcs := delta.Get("tool_calls"); tcs.Exists() && tcs.IsArray() && len(tcs.Array()) > 0 {
 					if st.ReasoningID != "" {
 						stopReasoning(st.ReasoningBuf.String())
 						st.ReasoningBuf.Reset()
@@ -886,8 +887,12 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 
 	// Build output list from choices[...]
 	var outputItems [][]byte
-	// Detect and capture reasoning content if present
-	rcText := gjson.GetBytes(rawJSON, "choices.0.message.reasoning_content").String()
+	// Detect and capture reasoning content if present (with fallback to reasoning)
+	rc := gjson.GetBytes(rawJSON, "choices.0.message.reasoning_content")
+	if !rc.Exists() || rc.String() == "" {
+		rc = gjson.GetBytes(rawJSON, "choices.0.message.reasoning")
+	}
+	rcText := rc.String()
 	includeReasoning := rcText != ""
 	if !includeReasoning && len(requestRawJSON) > 0 {
 		includeReasoning = gjson.GetBytes(requestRawJSON, "reasoning").Exists()
@@ -934,7 +939,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 							// function_call item stays usable for Codex round-trips.
 							callID = fmt.Sprintf("call_%s_%d_%d", id, choice.Get("index").Int(), tcIndex.Int())
 						}
-						name := tc.Get("function.name").String()
+						name := canonicalResponsesToolName(requestForNamespace, tc.Get("function.name").String())
 						args := tc.Get("function.arguments").String()
 						toolStatus := "completed"
 						if isIncomplete {
