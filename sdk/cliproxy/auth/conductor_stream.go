@@ -290,7 +290,7 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 			return buffered, true, nil
 		}
 		if chunk.Err != nil {
-			if bootstrap.hasMeaningfulOutput() || (len(buffered) > 0 && isCredentialScopedError(chunk.Err)) {
+			if bootstrap.hasMeaningfulOutput() || (bootstrap.bytes > 0 && statusCodeFromError(chunk.Err) == http.StatusTooManyRequests) {
 				buffered = append(buffered, chunk)
 				return buffered, false, nil
 			}

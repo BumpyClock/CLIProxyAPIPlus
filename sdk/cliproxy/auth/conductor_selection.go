@@ -58,8 +58,8 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+	callerExcluded   map[string]struct{}
 }
-
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
 	return context.WithValue(ctx, requiredAuthKindContextKey{}, requiredKind)
 }
@@ -77,7 +77,10 @@ func credentialPolicyFromContext(ctx context.Context) string {
 }
 
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
-	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
+	eligibility := authSelectionEligibility{
+		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
+		callerExcluded:   extractExcludedAuthIDs(opts.Metadata),
+	}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -88,6 +91,11 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
 		return false
+	}
+	if len(e.callerExcluded) > 0 {
+		if _, isExcluded := e.callerExcluded[auth.ID]; isExcluded {
+			return false
+		}
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
 		return false
@@ -1015,7 +1023,7 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 	return m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, 0, nil)
 }
 
-func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}, excludedAuthIDs ...map[string]struct{}) (time.Duration, bool) {
+func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}) (time.Duration, bool) {
 	if m == nil || len(providers) == 0 {
 		return 0, false
 	}
@@ -1034,10 +1042,7 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
 	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var excluded map[string]struct{}
-	if len(excludedAuthIDs) > 0 {
-		excluded = excludedAuthIDs[0]
-	}
+
 	var (
 		found   bool
 		minWait time.Duration
@@ -1049,11 +1054,7 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
 			continue
 		}
-		if len(excluded) > 0 {
-			if _, isExcluded := excluded[auth.ID]; isExcluded {
-				continue
-			}
-		}
+
 		if !eligibility.allows(auth) {
 			continue
 		}
@@ -1117,7 +1118,7 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
 	return minWait, found
 }
 
-func (m *Manager) retryAllowed(attempt int, providers []string, model string, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, excludedAuthIDs ...map[string]struct{}) bool {
+func (m *Manager) retryAllowed(attempt int, providers []string, model string, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) bool {
 	if m == nil || attempt < 0 || len(providers) == 0 {
 		return false
 	}
@@ -1140,10 +1141,7 @@ func (m *Manager) retryAllowed(attempt int, providers []string, model string, el
 	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var excluded map[string]struct{}
-	if len(excludedAuthIDs) > 0 {
-		excluded = excludedAuthIDs[0]
-	}
+
 	for _, auth := range m.auths {
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 			continue
@@ -1151,11 +1149,7 @@ func (m *Manager) retryAllowed(attempt int, providers []string, model string, el
 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
 			continue
 		}
-		if len(excluded) > 0 {
-			if _, isExcluded := excluded[auth.ID]; isExcluded {
-				continue
-			}
-		}
+
 		if !eligibility.allows(auth) {
 			continue
 		}
@@ -1246,11 +1240,10 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	callerExcluded := extractExcludedAuthIDs(opts.Metadata)
-	if !isCredentialRetryRoundStatus(status) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry, callerExcluded) {
+	if !isCredentialRetryRoundStatus(status) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
 		return 0, false
 	}
-	wait, found := m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted, callerExcluded)
+	wait, found := m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
 	if found {
 		if wait > 0 && (maxWait <= 0 || wait > maxWait) {
 			return 0, false

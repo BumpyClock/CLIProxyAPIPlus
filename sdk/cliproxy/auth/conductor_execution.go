@@ -146,7 +146,8 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker, tried)
+		roundOpts = withExcludedAuthIDs(roundOpts, tried)
+		resp, errExec := m.executeMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker)
 		if errExec == nil {
 			return resp, nil
 		}
@@ -165,6 +166,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
+		}
+		for id := range roundAttempted {
+			tried[id] = struct{}{}
 		}
 		tried = m.resetRecoveredExclusions(tried, callerExcluded, statusCodeFromError(errExec))
 	}
@@ -215,7 +219,8 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
-		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker, tried)
+		roundOpts = withExcludedAuthIDs(roundOpts, tried)
+		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, tracker)
 		if errExec == nil {
 			return resp, nil
 		}
@@ -234,6 +239,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
+		}
+		for id := range roundAttempted {
+			tried[id] = struct{}{}
 		}
 		tried = m.resetRecoveredExclusions(tried, callerExcluded, statusCodeFromError(errExec))
 	}
@@ -281,7 +289,8 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	for {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry, tracker, tried)
+		roundOpts = withExcludedAuthIDs(roundOpts, tried)
+		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry, tracker)
 		if errStream == nil {
 			return result, nil
 		}
@@ -314,6 +323,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return nil, errWait
+		}
+		for id := range roundAttempted {
+			tried[id] = struct{}{}
 		}
 		tried = m.resetRecoveredExclusions(tried, callerExcluded, statusCodeFromError(errStream))
 		attempt++
@@ -2223,16 +2235,9 @@ func isAuthNotFoundError(err error) bool {
 	return false
 }
 
-func (m *Manager) resetRecoveredExclusions(tried, preserve map[string]struct{}, status ...int) map[string]struct{} {
+func (m *Manager) resetRecoveredExclusions(tried, preserve map[string]struct{}, failedStatus int) map[string]struct{} {
 	if len(tried) == 0 {
 		return tried
-	}
-	if quotaCooldownDisabled.Load() {
-		return tried
-	}
-	failedStatus := 0
-	if len(status) > 0 {
-		failedStatus = status[0]
 	}
 	kept := make(map[string]struct{}, len(tried))
 	if failedStatus == http.StatusTooManyRequests {

@@ -272,6 +272,9 @@ func (m *Manager) executeHomeOnceWithTracker(ctx context.Context, providers []st
 				result.Success = false
 				result.Error = errEmptyCompletion
 				m.reportHomeResult(execCtx, result, preparedAuth)
+				if tracker != nil {
+					tracker.Record(preparedAuth, errEmptyCompletion)
+				}
 				roundTiming.Observe(errEmptyCompletion)
 				lastErr = errEmptyCompletion
 				continue

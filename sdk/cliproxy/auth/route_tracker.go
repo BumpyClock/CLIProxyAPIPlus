@@ -128,7 +128,7 @@ func wrapRouteExhaustion(cause error, tracker *routeAttemptTracker) error {
 		return cause
 	}
 	summary := tracker.Summary()
-	if summary == "" {
+	if summary == "" || isStructuredJSON(cause.Error()) {
 		return cause
 	}
 	return &routeExhaustionClonedError{

@@ -1231,7 +1231,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
-	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, time.Now())
+	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, time.Now(), extractExcludedAuthIDs(opts.Metadata))
 	if errAvailable != nil {
 		return nil, true, errAvailable
 	}
