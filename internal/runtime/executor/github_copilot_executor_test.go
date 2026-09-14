@@ -313,8 +313,6 @@ func TestTranslateGitHubCopilotResponsesStreamToClaude_TextLifecycle(t *testing.
 	}
 }
 
-// --- Tests for X-Initiator detection logic (Problem L) ---
-
 func TestApplyHeaders_XInitiator_UserOnly(t *testing.T) {
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
@@ -330,9 +328,6 @@ func TestApplyHeaders_XInitiator_AgentWhenLastUserButHistoryHasAssistant(t *test
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	// When the last role is "user" and the message contains tool_result content,
-	// the request is a continuation (e.g. Claude tool result translated to a
-	// synthetic user message). Should be "agent".
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"I will read the file"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"file contents..."}]}]}`)
 	e.applyHeaders(req, "token", body)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
@@ -344,7 +339,6 @@ func TestApplyHeaders_XInitiator_AgentWithToolRole(t *testing.T) {
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	// When the last message has role "tool", it's clearly agent-initiated.
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"tool","content":"result"}]}`)
 	e.applyHeaders(req, "token", body)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
@@ -367,7 +361,6 @@ func TestApplyHeaders_XInitiator_InputArrayAgentWhenLastUserButHistoryHasAssista
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	// Responses API: last item is user-role but history contains assistant → agent.
 	body := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I can help"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"Do X"}]}]}`)
 	e.applyHeaders(req, "token", body)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
@@ -390,8 +383,6 @@ func TestApplyHeaders_XInitiator_UserInMultiTurnNoTools(t *testing.T) {
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	// Genuine multi-turn: user → assistant (plain text) → user follow-up.
-	// No tool messages → should be "user" (not a false-positive).
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"Hi there!"},{"role":"user","content":"what is 2+2?"}]}`)
 	e.applyHeaders(req, "token", body)
 	if got := req.Header.Get("X-Initiator"); got != "user" {
@@ -403,17 +394,12 @@ func TestApplyHeaders_XInitiator_UserFollowUpAfterToolHistory(t *testing.T) {
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	// User follow-up after a completed tool-use conversation.
-	// The last message is a genuine user question — should be "user", not "agent".
-	// This aligns with opencode's behavior: only active tool loops are agent-initiated.
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Read","input":{}}]},{"role":"tool","tool_call_id":"tu1","content":"file data"},{"role":"assistant","content":"I read the file."},{"role":"user","content":"What did we do so far?"}]}`)
 	e.applyHeaders(req, "token", body)
 	if got := req.Header.Get("X-Initiator"); got != "user" {
 		t.Fatalf("X-Initiator = %q, want user (genuine follow-up after tool history)", got)
 	}
 }
-
-// --- Tests for x-github-api-version header (Problem M) ---
 
 func TestApplyHeaders_GitHubAPIVersion(t *testing.T) {
 	t.Parallel()
@@ -424,8 +410,6 @@ func TestApplyHeaders_GitHubAPIVersion(t *testing.T) {
 		t.Fatalf("X-Github-Api-Version = %q, want 2025-04-01", got)
 	}
 }
-
-// --- Tests for vision detection (Problem P) ---
 
 func TestDetectVisionContent_WithImageURL(t *testing.T) {
 	t.Parallel()
@@ -453,14 +437,11 @@ func TestDetectVisionContent_NoVision(t *testing.T) {
 
 func TestDetectVisionContent_NoMessages(t *testing.T) {
 	t.Parallel()
-	// After Responses API normalization, messages is removed — detection should return false
 	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 	if detectVisionContent(body) {
 		t.Fatal("expected no vision content when messages field is absent")
 	}
 }
-
-// --- Tests for applyGitHubCopilotResponsesDefaults ---
 
 func TestApplyGitHubCopilotResponsesDefaults_SetsAllDefaults(t *testing.T) {
 	t.Parallel()
@@ -503,13 +484,10 @@ func TestApplyGitHubCopilotResponsesDefaults_NoReasoningEffort(t *testing.T) {
 	if gjson.GetBytes(got, "store").Bool() != false {
 		t.Fatalf("store = %v, want false", gjson.GetBytes(got, "store").Raw)
 	}
-	// reasoning.summary should NOT be set when reasoning.effort is absent
 	if gjson.GetBytes(got, "reasoning.summary").Exists() {
 		t.Fatalf("reasoning.summary should not be set when reasoning.effort is absent, got %q", gjson.GetBytes(got, "reasoning.summary").String())
 	}
 }
-
-// --- Tests for normalizeGitHubCopilotReasoningField ---
 
 func TestNormalizeReasoningField_NonStreaming(t *testing.T) {
 	t.Parallel()
@@ -574,8 +552,6 @@ func TestApplyHeaders_OpenAIIntentValue(t *testing.T) {
 	}
 }
 
-// --- Tests for CountTokens (local tiktoken estimation) ---
-
 func TestCountTokens_ReturnsPositiveCount(t *testing.T) {
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
@@ -592,7 +568,6 @@ func TestCountTokens_ReturnsPositiveCount(t *testing.T) {
 	if len(resp.Payload) == 0 {
 		t.Fatal("CountTokens() returned empty payload")
 	}
-	// The response should contain a positive token count.
 	tokens := gjson.GetBytes(resp.Payload, "usage.prompt_tokens").Int()
 	if tokens <= 0 {
 		t.Fatalf("expected positive token count, got %d", tokens)
@@ -612,7 +587,6 @@ func TestCountTokens_ClaudeSourceFormatTranslates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountTokens() error: %v", err)
 	}
-	// Claude source format → should get input_tokens in response
 	inputTokens := gjson.GetBytes(resp.Payload, "input_tokens").Int()
 	if inputTokens <= 0 {
 		// Fallback: check usage.prompt_tokens (depends on translator registration)
@@ -774,7 +748,6 @@ func TestCountTokens_EmptyPayload(t *testing.T) {
 		t.Fatalf("CountTokens() error: %v", err)
 	}
 	tokens := gjson.GetBytes(resp.Payload, "usage.prompt_tokens").Int()
-	// Empty messages should return 0 tokens.
 	if tokens != 0 {
 		t.Fatalf("expected 0 tokens for empty messages, got %d", tokens)
 	}
@@ -795,7 +768,6 @@ func TestStripUnsupportedBetas_RemovesContext1M(t *testing.T) {
 			t.Fatal("context-1m-2025-08-07 should have been stripped")
 		}
 	}
-	// Other betas should be preserved
 	found := false
 	for _, item := range betas.Array() {
 		if item.String() == "interleaved-thinking-2025-05-14" {
@@ -813,7 +785,6 @@ func TestStripUnsupportedBetas_NoBetasField(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","messages":[]}`)
 	result := stripUnsupportedBetas(body)
 
-	// Should be unchanged
 	if string(result) != string(body) {
 		t.Fatalf("body should be unchanged when no betas field exists, got %s", string(result))
 	}

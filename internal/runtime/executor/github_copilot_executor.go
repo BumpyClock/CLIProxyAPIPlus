@@ -32,12 +32,9 @@ const (
 	githubCopilotResponsesPath = "/responses"
 	githubCopilotAuthType      = "github-copilot"
 	githubCopilotTokenCacheTTL = 25 * time.Minute
-	// tokenExpiryBuffer is the time before expiry when we should refresh the token.
-	tokenExpiryBuffer = 5 * time.Minute
-	// maxScannerBufferSize is the maximum buffer size for SSE scanning (20MB).
-	maxScannerBufferSize = 20_971_520
+	tokenExpiryBuffer          = 5 * time.Minute
+	maxScannerBufferSize       = 20_971_520
 
-	// Copilot API header values.
 	copilotUserAgent     = "GitHubCopilotChat/0.35.0"
 	copilotEditorVersion = "vscode/1.107.0"
 	copilotPluginVersion = "copilot-chat/0.35.0"
@@ -53,7 +50,6 @@ type GitHubCopilotExecutor struct {
 	cache map[string]*cachedAPIToken
 }
 
-// cachedAPIToken stores a cached Copilot API token with its expiry.
 type cachedAPIToken struct {
 	token       string
 	apiEndpoint string
@@ -170,7 +166,6 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 	}
 	e.applyHeaders(httpReq, apiToken, body)
 
-	// Add Copilot-Vision-Request header if the request contains vision content
 	if hasVision {
 		httpReq.Header.Set("Copilot-Vision-Request", "true")
 	}
@@ -297,7 +292,6 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, req.Model, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
-	// Enable stream options for usage stats in stream
 	if !useResponses {
 		body, _ = sjson.SetBytes(body, "stream_options.include_usage", true)
 	}
@@ -313,7 +307,6 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	}
 	e.applyHeaders(httpReq, apiToken, body)
 
-	// Add Copilot-Vision-Request header if the request contains vision content
 	if hasVision {
 		httpReq.Header.Set("Copilot-Vision-Request", "true")
 	}
@@ -378,7 +371,6 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 
-			// Parse SSE data
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
 				if bytes.Equal(data, []byte("[DONE]")) {
@@ -473,13 +465,11 @@ func (e *GitHubCopilotExecutor) Refresh(ctx context.Context, auth *cliproxyauth.
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
 	}
 
-	// Get the GitHub access token
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	if accessToken == "" {
 		return auth, nil
 	}
 
-	// Validate the token can still get a Copilot API token
 	copilotAuth := copilotauth.NewCopilotAuth(e.cfg)
 	_, err := copilotAuth.GetCopilotAPIToken(ctx, accessToken)
 	if err != nil {
@@ -553,19 +543,16 @@ func buildCopilotAnthropicGatewayAuth(auth *cliproxyauth.Auth, apiToken, baseURL
 	return nativeAuth
 }
 
-// ensureAPIToken gets or refreshes the Copilot API token.
 func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *cliproxyauth.Auth) (string, string, error) {
 	if auth == nil {
 		return "", "", statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
 	}
 
-	// Get the GitHub access token
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	if accessToken == "" {
 		return "", "", statusErr{code: http.StatusUnauthorized, msg: "missing github access token"}
 	}
 
-	// Check for cached API token using thread-safe access
 	e.mu.RLock()
 	if cached, ok := e.cache[accessToken]; ok && cached.expiresAt.After(time.Now().Add(tokenExpiryBuffer)) {
 		e.mu.RUnlock()
@@ -573,20 +560,17 @@ func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *clipro
 	}
 	e.mu.RUnlock()
 
-	// Get a new Copilot API token
 	copilotAuth := copilotauth.NewCopilotAuth(e.cfg)
 	apiToken, err := copilotAuth.GetCopilotAPIToken(ctx, accessToken)
 	if err != nil {
 		return "", "", statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("failed to get copilot api token: %v", err)}
 	}
 
-	// Use endpoint from token response, fall back to default
 	apiEndpoint := githubCopilotBaseURL
 	if apiToken.Endpoints.API != "" {
 		apiEndpoint = strings.TrimRight(apiToken.Endpoints.API, "/")
 	}
 
-	// Cache the token with thread-safe access
 	expiresAt := time.Now().Add(githubCopilotTokenCacheTTL)
 	if apiToken.ExpiresAt > 0 {
 		expiresAt = time.Unix(apiToken.ExpiresAt, 0)
@@ -602,7 +586,6 @@ func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *clipro
 	return apiToken.Token, apiEndpoint, nil
 }
 
-// applyHeaders sets the required headers for GitHub Copilot API requests.
 func (e *GitHubCopilotExecutor) applyHeaders(r *http.Request, apiToken string, body []byte) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+apiToken)
@@ -622,35 +605,14 @@ func (e *GitHubCopilotExecutor) applyHeaders(r *http.Request, apiToken string, b
 	r.Header.Set("X-Initiator", initiator)
 }
 
-// isAgentInitiated determines whether the current request is agent-initiated
-// (tool callbacks, continuations) rather than user-initiated (new user prompt).
-//
-// GitHub Copilot uses the X-Initiator header for billing:
-//   - "user"  → consumes premium request quota
-//   - "agent" → free (tool loops, continuations)
-//
-// The challenge: Claude Code sends tool results as role:"user" messages with
-// content type "tool_result". After translation to OpenAI format, the tool_result
-// part becomes a separate role:"tool" message, but if the original Claude message
-// also contained text content (e.g. skill invocations, attachment descriptions),
-// a role:"user" message is emitted AFTER the tool message, making the last message
-// appear user-initiated when it's actually part of an agent tool loop.
-//
-// VSCode Copilot Chat solves this with explicit flags (iterationNumber,
-// isContinuation, subAgentInvocationId). Since CPA doesn't have these flags,
-// we infer agent status by checking whether the conversation contains prior
-// assistant/tool messages — if it does, the current request is a continuation.
-//
-// References:
-//   - opencode#8030, opencode#15824: same root cause and fix approach
-//   - vscode-copilot-chat: toolCallingLoop.ts (iterationNumber === 0)
-//   - pi-ai: github-copilot-headers.ts (last message role check)
+// isAgentInitiated infers tool-loop continuations for Copilot's X-Initiator
+// billing header. Claude tool results can have role "user", so role alone
+// does not distinguish a continuation from a new user prompt.
 func isAgentInitiated(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
 
-	// Chat Completions API: check messages array
 	if messages := gjson.GetBytes(body, "messages"); messages.Exists() && messages.IsArray() {
 		arr := messages.Array()
 		if len(arr) == 0 {
@@ -665,18 +627,12 @@ func isAgentInitiated(body []byte) bool {
 			}
 		}
 
-		// If last message is assistant or tool, clearly agent-initiated.
 		if lastRole == "assistant" || lastRole == "tool" {
 			return true
 		}
 
-		// If last message is "user", check whether it contains tool results
-		// (indicating a tool-loop continuation) or if the preceding message
-		// is an assistant tool_use. This is more precise than checking for
-		// any prior assistant message, which would false-positive on genuine
-		// multi-turn follow-ups.
+		// Older assistant messages alone would misclassify genuine user follow-ups.
 		if lastRole == "user" {
-			// Check if the last user message contains tool_result content
 			lastContent := arr[len(arr)-1].Get("content")
 			if lastContent.Exists() && lastContent.IsArray() {
 				for _, part := range lastContent.Array() {
@@ -685,7 +641,6 @@ func isAgentInitiated(body []byte) bool {
 					}
 				}
 			}
-			// Check if the second-to-last message is an assistant with tool_use
 			if len(arr) >= 2 {
 				prev := arr[len(arr)-2]
 				if prev.Get("role").String() == "assistant" {
@@ -704,14 +659,12 @@ func isAgentInitiated(body []byte) bool {
 		return false
 	}
 
-	// Responses API: check input array
 	if inputs := gjson.GetBytes(body, "input"); inputs.Exists() && inputs.IsArray() {
 		arr := inputs.Array()
 		if len(arr) == 0 {
 			return false
 		}
 
-		// Check last item
 		last := arr[len(arr)-1]
 		if role := last.Get("role").String(); role == "assistant" {
 			return true
@@ -723,7 +676,6 @@ func isAgentInitiated(body []byte) bool {
 			return true
 		}
 
-		// If last item is user-role, check for prior non-user items
 		for _, item := range arr {
 			if role := item.Get("role").String(); role == "assistant" {
 				return true
@@ -739,24 +691,18 @@ func isAgentInitiated(body []byte) bool {
 	return false
 }
 
-// detectVisionContent checks if the request body contains vision/image content.
-// Returns true if the request includes image_url or image type content blocks.
 func detectVisionContent(body []byte) bool {
-	// Parse messages array
 	messagesResult := gjson.GetBytes(body, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
 		return false
 	}
 
-	// Check each message for vision content
 	for _, message := range messagesResult.Array() {
 		content := message.Get("content")
 
-		// If content is an array, check each content block
 		if content.IsArray() {
 			for _, block := range content.Array() {
 				blockType := block.Get("type").String()
-				// Check for image_url or image type
 				if blockType == "image_url" || blockType == "image" {
 					return true
 				}
@@ -837,7 +783,6 @@ func normalizeGitHubCopilotReasoningField(data []byte) []byte {
 		return data
 	}
 	for i := range choices.Array() {
-		// Non-streaming: choices[i].message.reasoning_text
 		msgRT := fmt.Sprintf("choices.%d.message.reasoning_text", i)
 		msgRC := fmt.Sprintf("choices.%d.message.reasoning_content", i)
 		if rt := gjson.GetBytes(data, msgRT); rt.Exists() && rt.String() != "" {
@@ -845,7 +790,6 @@ func normalizeGitHubCopilotReasoningField(data []byte) []byte {
 				data, _ = sjson.SetBytes(data, msgRC, rt.String())
 			}
 		}
-		// Streaming: choices[i].delta.reasoning_text
 		deltaRT := fmt.Sprintf("choices.%d.delta.reasoning_text", i)
 		deltaRC := fmt.Sprintf("choices.%d.delta.reasoning_content", i)
 		if rt := gjson.GetBytes(data, deltaRT); rt.Exists() && rt.String() != "" {
@@ -960,21 +904,16 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 	body = stripGitHubCopilotResponsesUnsupportedFields(body)
 	input := gjson.GetBytes(body, "input")
 	if input.Exists() {
-		// If input is already a string or array, keep it as-is.
 		if input.Type == gjson.String || input.IsArray() {
 			return body
 		}
-		// Non-string/non-array input: stringify as fallback.
 		body, _ = sjson.SetBytes(body, "input", input.Raw)
 		return body
 	}
 
-	// Convert Claude messages format to OpenAI Responses API input array.
-	// This preserves the conversation structure (roles, tool calls, tool results)
-	// which is critical for multi-turn tool-use conversations.
+	// Preserve roles and tool calls when converting Claude messages to Responses input.
 	inputArr := "[]"
 
-	// System messages → developer role
 	if system := gjson.GetBytes(body, "system"); system.Exists() {
 		var systemParts []string
 		if system.IsArray() {
@@ -997,7 +936,6 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 		}
 	}
 
-	// Messages → structured input items
 	if messages := gjson.GetBytes(body, "messages"); messages.Exists() && messages.IsArray() {
 		for _, msg := range messages.Array() {
 			role := msg.Get("role").String()
@@ -1007,7 +945,6 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 				continue
 			}
 
-			// Simple string content
 			if content.Type == gjson.String {
 				textType := "input_text"
 				if role == "assistant" {
@@ -1060,7 +997,6 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 						}
 					}
 				case "tool_use":
-					// Flush any accumulated message parts first
 					if len(msgParts) > 0 {
 						item := `{"type":"message","role":"","content":[]}`
 						item, _ = sjson.Set(item, "role", role)
@@ -1078,7 +1014,6 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 					}
 					inputArr, _ = sjson.SetRaw(inputArr, "-1", fc)
 				case "tool_result":
-					// Flush any accumulated message parts first
 					if len(msgParts) > 0 {
 						item := `{"type":"message","role":"","content":[]}`
 						item, _ = sjson.Set(item, "role", role)
@@ -1090,7 +1025,6 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 					}
 					fco := `{"type":"function_call_output","call_id":"","output":""}`
 					fco, _ = sjson.Set(fco, "call_id", c.Get("tool_use_id").String())
-					// Extract output text
 					resultContent := c.Get("content")
 					if resultContent.Type == gjson.String {
 						fco, _ = sjson.Set(fco, "output", resultContent.String())
@@ -1111,7 +1045,6 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 				}
 			}
 
-			// Flush remaining message parts
 			if len(msgParts) > 0 {
 				item := `{"type":"message","role":"","content":[]}`
 				item, _ = sjson.Set(item, "role", role)
@@ -1124,7 +1057,6 @@ func normalizeGitHubCopilotResponsesInput(body []byte) []byte {
 	}
 
 	body, _ = sjson.SetRawBytes(body, "input", []byte(inputArr))
-	// Remove messages/system since we've converted them to input
 	body, _ = sjson.DeleteBytes(body, "messages")
 	body, _ = sjson.DeleteBytes(body, "system")
 	return body
@@ -1143,7 +1075,6 @@ func stripGitHubCopilotResponsesUnsupportedFields(body []byte) []byte {
 //   - vscode-copilot-chat: src/platform/endpoint/node/responsesApi.ts
 //   - pi-ai (badlogic/pi-mono): packages/ai/src/providers/openai-responses.ts
 func applyGitHubCopilotResponsesDefaults(body []byte) []byte {
-	// store: false — prevents request/response storage
 	if !gjson.GetBytes(body, "store").Exists() {
 		body, _ = sjson.SetBytes(body, "store", false)
 	}
@@ -1154,7 +1085,6 @@ func applyGitHubCopilotResponsesDefaults(body []byte) []byte {
 		body, _ = sjson.SetRawBytes(body, "include", []byte(`["reasoning.encrypted_content"]`))
 	}
 
-	// If reasoning.effort is set but reasoning.summary is not, default to "auto"
 	if gjson.GetBytes(body, "reasoning.effort").Exists() && !gjson.GetBytes(body, "reasoning.summary").Exists() {
 		body, _ = sjson.SetBytes(body, "reasoning.summary", "auto")
 	}
@@ -1618,15 +1548,12 @@ func translateGitHubCopilotResponsesStreamToClaude(line []byte, param *any) [][]
 	return results
 }
 
-// isHTTPSuccess checks if the status code indicates success (2xx).
 func isHTTPSuccess(statusCode int) bool {
 	return statusCode >= 200 && statusCode < 300
 }
 
 const (
-	// defaultCopilotContextLength is the default context window for unknown Copilot models.
-	defaultCopilotContextLength = 128000
-	// defaultCopilotMaxCompletionTokens is the default max output tokens for unknown Copilot models.
+	defaultCopilotContextLength       = 128000
 	defaultCopilotMaxCompletionTokens = 16384
 )
 
@@ -1695,7 +1622,6 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 			m.DisplayName = entry.ID
 		}
 
-		// Merge known metadata from the static fallback list
 		if static, ok := staticMap[entry.ID]; ok {
 			if m.DisplayName == entry.ID && static.DisplayName != "" {
 				m.DisplayName = static.DisplayName
@@ -1706,18 +1632,13 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 			m.SupportedEndpoints = static.SupportedEndpoints
 			m.Thinking = static.Thinking
 		} else {
-			// Sensible defaults for models not in the static list
 			m.Description = entry.ID + " via GitHub Copilot"
 			m.ContextLength = defaultCopilotContextLength
 			m.MaxCompletionTokens = defaultCopilotMaxCompletionTokens
 		}
 
-		// Override with real limits from the Copilot API when available.
-		// The API returns per-account limits (individual vs business) under
-		// capabilities.limits, which are more accurate than our static
-		// fallback values. We use max_prompt_tokens as ContextLength because
-		// that's the hard limit the Copilot API enforces on prompt size —
-		// exceeding it triggers "prompt token count exceeds the limit" errors.
+		// Prefer per-account API limits over static defaults. max_prompt_tokens
+		// is the enforced prompt limit, so use it as ContextLength.
 		if limits := entry.Limits(); limits != nil {
 			if limits.MaxPromptTokens > 0 {
 				m.ContextLength = limits.MaxPromptTokens
