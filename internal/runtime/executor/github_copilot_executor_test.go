@@ -958,3 +958,32 @@ func TestCopilotModelEntry_Limits(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubCopilotResponsesStreamPreservesSSEFraming(t *testing.T) {
+	wire := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n" +
+		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"}},\"output\":[]}}\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, wire)
+	}))
+	defer server.Close()
+	e := NewGitHubCopilotExecutor(&config.Config{})
+	e.cache["test-token"] = &cachedAPIToken{token: "test-api-token", apiEndpoint: server.URL, expiresAt: time.Now().Add(time.Hour)}
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"access_token": "test-token"}}
+	payload := []byte(`{"model":"gpt-5.6-luna","input":[{"role":"user","content":"Hello"}],"stream":true}`)
+	result, err := e.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{Model: "gpt-5.6-luna", Payload: payload}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), OriginalRequest: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var joined strings.Builder
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+		joined.Write(chunk.Payload)
+	}
+	if joined.String() != wire {
+		t.Fatalf("SSE framing changed: got %q, want %q", joined.String(), wire)
+	}
+}

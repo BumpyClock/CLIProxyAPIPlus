@@ -3112,3 +3112,31 @@ func TestEmptyCompletionResponsesImageGenerationCallResult(t *testing.T) {
 		t.Fatalf("StreamBootstrapDetector.Observe(whitespace result) = %v, want false", got)
 	}
 }
+
+func TestResponsesTextConfigurationIsNotEmptyCompletion(t *testing.T) {
+	payload := []byte(`{"object":"response","status":"completed","text":{"format":{"type":"text"},"verbosity":"medium"},"output":[{"type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"OK","annotations":[],"logprobs":[]}]}],"usage":{"input_tokens":9,"output_tokens":5,"total_tokens":14}}`)
+	if IsEmptyCompletionPayload(payload) {
+		t.Fatal("completed response with text configuration and output classified as empty")
+	}
+	detector := new(StreamBootstrapDetector)
+	if !detector.Observe(payload) || detector.Finish() {
+		t.Fatal("completed response with text configuration was not forwarded")
+	}
+}
+
+func TestResponsesUninspectableShapeIsNotEmptyCompletion(t *testing.T) {
+	for _, payload := range []string{
+		`{"object":"response","usage":[]}`,
+		`{"type":"response.output_text.delta","delta":{"text":"OK"}}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			if IsEmptyCompletionPayload([]byte(payload)) {
+				t.Fatal("uninspectable response classified as empty")
+			}
+			detector := new(StreamBootstrapDetector)
+			if !detector.Observe([]byte(payload)) || detector.Finish() {
+				t.Fatal("uninspectable response was not forwarded")
+			}
+		})
+	}
+}

@@ -410,6 +410,10 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 						}
 					}
 				}
+				if useResponses && from == to {
+					// Scanner removes delimiters; passthrough streams must retain SSE framing.
+					normalizedLine = append(normalizedLine, '\n')
+				}
 				chunks = sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), body, normalizedLine, &param)
 			}
 			for i := range chunks {

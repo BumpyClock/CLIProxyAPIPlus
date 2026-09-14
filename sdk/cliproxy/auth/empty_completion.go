@@ -678,6 +678,9 @@ func (a *emptyCompletionAccum) evalOpenAIResponse(data []byte) bool {
 
 	var chunk openAIResponseChunk
 	if err := json.Unmarshal(data, &chunk); err != nil {
+		// Responses objects use text for format configuration, while text-done
+		// events use a string. An uninspectable shape is not evidence of emptiness.
+		a.sawUnknownData = true
 		return true
 	}
 
