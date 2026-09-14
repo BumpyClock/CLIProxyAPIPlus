@@ -15,6 +15,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
+// fetchCursorModelsForRegistration is overridable in tests to avoid real credentials and network requests.
+var fetchCursorModelsForRegistration = executor.FetchCursorModels
+
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
 func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	s.registerModelsForAuthWithCache(ctx, a, nil)
@@ -56,6 +59,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 	var models []*ModelInfo
+	var cursorRoutingModels []*ModelInfo
 	switch provider {
 	case constant.Gemini:
 		models = registry.GetGeminiModels()
@@ -145,8 +149,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
 	case "cursor":
-		models = applyExcludedModels(executor.FetchCursorModels(ctx, a, s.cfg), excluded)
-		helps.StoreCursorRoutingModels(a.ID, models)
+		models = applyExcludedModels(fetchCursorModelsForRegistration(ctx, a, s.cfg), excluded)
+		cursorRoutingModels = models
 		models = applyExcludedModels(helps.AddCursorModelFamilies(models), excluded)
 	case "github-copilot":
 		models = applyExcludedModels(executor.FetchGitHubCopilotModels(ctx, a, s.cfg), excluded)
@@ -287,6 +291,12 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
 	}
 	models = s.appendPluginModels(key, models)
+	if ctx.Err() != nil {
+		return
+	}
+	if provider == "cursor" {
+		helps.StoreCursorRoutingModels(a.ID, cursorRoutingModels)
+	}
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return

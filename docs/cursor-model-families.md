@@ -37,12 +37,23 @@ values sent by harness defaults. For example, Composer 2.5 accepts a request
 containing `reasoning.effort: "medium"` but only its speed setting affects
 variant selection. This does not add reasoning controls to Composer.
 
+Canonical model suffixes such as `claude-opus-5(high)` also select family
+options and take precedence over body effort and thinking settings.
+Thinking-only families advertise thinking support even without effort levels.
+
 Explicit variant IDs retain their existing behavior. Original models remain
 in the catalog alongside family IDs, so clients should curate their picker
 if they want only families. Model exclusions are applied before deriving
 families and remain effective during variant resolution. Available options
 can differ between accounts; advertised family effort levels do not imply
 that every effort/thinking/speed combination exists.
+
+If a selected account lacks a requested combination, the proxy tries another
+eligible account within the configured credential-attempt limit. These misses
+do not cool down the account or family. If the available attempts are exhausted,
+the request returns HTTP 400; invalid options stop immediately without rotation.
+Canceled model refreshes retain both the previous registration and its filtered
+routing catalog.
 
 This routing feature does not change tool translation or streaming behavior,
 and does not establish compatibility of every Cursor model with every harness.

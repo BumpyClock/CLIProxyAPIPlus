@@ -420,15 +420,10 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, fmt.Errorf("cursor: access token not found")
 	}
 
-	optionPayload := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		optionPayload = opts.OriginalRequest
-	}
-	upstreamModel, errResolve := helps.ResolveCursorModel(req.Model, optionPayload, opts.SourceFormat.String(), helps.CursorRoutingModels(auth.ID, cursorModelsOrFallback(auth.ID)))
+	upstreamModel, errResolve := helps.ResolveCursorRequestModel(auth.ID, req, opts, cursorModelsOrFallback)
 	if errResolve != nil {
-		return resp, cursorStatusErr{code: http.StatusBadRequest, msg: errResolve.Error()}
+		return resp, errResolve
 	}
-	log.WithFields(log.Fields{"requested_model": req.Model, "upstream_model": upstreamModel}).Debug("cursor: resolved model variant")
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
@@ -589,17 +584,12 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		sessionID = extractClaudeCodeSessionId(opts.OriginalRequest)
 	}
 
-	// Translate input to OpenAI format if needed
-	optionPayload := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		optionPayload = opts.OriginalRequest
-	}
-	upstreamModel, errResolve := helps.ResolveCursorModel(req.Model, optionPayload, opts.SourceFormat.String(), helps.CursorRoutingModels(auth.ID, cursorModelsOrFallback(auth.ID)))
+	upstreamModel, errResolve := helps.ResolveCursorRequestModel(auth.ID, req, opts, cursorModelsOrFallback)
 	if errResolve != nil {
-		return nil, cursorStatusErr{code: http.StatusBadRequest, msg: errResolve.Error()}
+		return nil, errResolve
 	}
-	log.WithFields(log.Fields{"requested_model": req.Model, "upstream_model": upstreamModel}).Debug("cursor: resolved model variant")
 
+	// Translate input to OpenAI format if needed
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	payload := req.Payload

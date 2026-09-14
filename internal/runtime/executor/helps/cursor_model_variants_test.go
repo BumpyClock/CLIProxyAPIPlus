@@ -1,10 +1,42 @@
 package helps
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
+
+func TestCursorVariantSelectionIsOrderIndependent(t *testing.T) {
+	models := []*registry.ModelInfo{{ID: "gpt-5.5-xhigh"}, {ID: "gpt-5.5-extra-high"}}
+	for range 2 {
+		got, err := ResolveCursorModel("gpt-5.5", []byte(`{"reasoning_effort":"xhigh"}`), "openai", models)
+		if err != nil || got != "gpt-5.5-extra-high" {
+			t.Fatalf("got %q, %v; want deterministic variant", got, err)
+		}
+		models[0], models[1] = models[1], models[0]
+	}
+}
+
+func TestCursorResolutionErrorKinds(t *testing.T) {
+	models := []*registry.ModelInfo{{ID: "claude-fable-5-1-thinking-high"}}
+	for _, tc := range []struct {
+		body        string
+		unavailable bool
+	}{
+		{`{"reasoning_effort":"low"}`, true},
+		{`{"reasoning_effort":"high","service_tier":"priority"}`, true},
+		{`{"reasoning_effort":"invalid"}`, false},
+		{`{"thinking":{"type":"invalid"}}`, false},
+		{`{"speed":"invalid"}`, false},
+		{`{"reasoning_effort":"none","thinking":{"type":"enabled"}}`, false},
+	} {
+		_, err := ResolveCursorModel("claude-fable-5-1", []byte(tc.body), "openai", models)
+		if err == nil || errors.Is(err, ErrCursorVariantUnavailable) != tc.unavailable {
+			t.Fatalf("%s: error=%v, want unavailable=%t", tc.body, err, tc.unavailable)
+		}
+	}
+}
 
 func TestResolveCursorModel(t *testing.T) {
 	models := []*registry.ModelInfo{}
@@ -25,6 +57,19 @@ func TestResolveCursorModel(t *testing.T) {
 		{"exact", "claude-fable-5-1-thinking-high", "claude", `{"output_config":{"effort":"low"}}`, "claude-fable-5-1-thinking-high", false},
 		{"unsupported", "claude-fable-5-1", "openai-response", `{"reasoning":{"effort":"low"}}`, "", true},
 		{"unsupported fast", "cursor-grok-4.6", "openai", `{"service_tier":"priority"}`, "", true},
+		{"suffix response", "claude-fable-5-1(high)", "openai-response", `{"reasoning":{"effort":"medium"}}`, "claude-fable-5-1-thinking-high", false},
+		{"suffix chat", "cursor-grok-4.6(xhigh)", "openai", `{"reasoning_effort":"high"}`, "cursor-grok-4.6-xhigh", false},
+		{"suffix claude", "claude-fable-5-1(high)", "claude", `{"thinking":{"type":"enabled"},"output_config":{"effort":"medium"}}`, "claude-fable-5-1-thinking-high", false},
+		{"suffix overrides disabled thinking", "claude-fable-5-1(high)", "claude", `{"thinking":{"type":"disabled"}}`, "claude-fable-5-1-thinking-high", false},
+		{"suffix none overrides enabled thinking", "claude-fable-5-1(none)", "claude", `{"thinking":{"type":"enabled"},"output_config":{"effort":"high"}}`, "claude-fable-5-1-medium", false},
+		{"suffix numeric", "claude-fable-5-1(16384)", "claude", `{"thinking":{"type":"disabled"}}`, "claude-fable-5-1-thinking-high", false},
+		{"suffix auto", "claude-fable-5-1(auto)", "claude", `{"thinking":{"type":"disabled"},"output_config":{"effort":"high"}}`, "claude-fable-5-1-thinking-medium", false},
+		{"suffix fast", "claude-fable-5-1(high)", "openai-response", `{"service_tier":"priority"}`, "claude-fable-5-1-thinking-high-fast", false},
+		{"suffix exact", "claude-fable-5-1-thinking-high(low)", "claude", `{"thinking":{"type":"disabled"},"output_config":{"effort":"medium"}}`, "claude-fable-5-1-thinking-high", false},
+		{"suffix exact base", "composer-2.5(high)", "openai", `{}`, "composer-2.5", false},
+		{"suffix unknown family", "unknown-model(high)", "openai", `{}`, "unknown-model(high)", false},
+		{"suffix unsupported", "claude-fable-5-1(low)", "openai-response", `{"reasoning":{"effort":"high"}}`, "", true},
+		{"invalid suffix body fallback", "claude-fable-5-1(invalid)", "claude", `{"thinking":{"type":"enabled"},"output_config":{"effort":"high"}}`, "claude-fable-5-1-thinking-high", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ResolveCursorModel(tc.model, []byte(tc.body), tc.format, models)
@@ -110,5 +155,49 @@ func TestCursorSingletonMetadataUnchanged(t *testing.T) {
 	got := AddCursorModelFamilies([]*registry.ModelInfo{model})
 	if len(got) != 1 || got[0] != model {
 		t.Fatal("singleton catalog entry changed")
+	}
+}
+
+func TestAddCursorModelFamiliesThinkingOnly(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		base := &registry.ModelInfo{ID: "claude-fable-5-1", DisplayName: "Fable", ContextLength: 200000, SupportedParameters: []string{"tools"}}
+		variant := &registry.ModelInfo{ID: "claude-fable-5-1-thinking"}
+		models := []*registry.ModelInfo{base, variant}
+		index := 0
+		if reverse {
+			models[0], models[1] = models[1], models[0]
+			index = 1
+		}
+		got := AddCursorModelFamilies(models)
+		if len(got) != len(models) {
+			t.Fatalf("reverse=%t: added duplicate base model", reverse)
+		}
+		family := got[index]
+		if family.Thinking == nil || len(family.Thinking.Levels) != 0 {
+			t.Fatalf("reverse=%t: thinking-only support not advertised: %+v", reverse, family.Thinking)
+		}
+		if family == base || family.ID != base.ID || family.DisplayName != base.DisplayName || family.ContextLength != base.ContextLength {
+			t.Fatalf("reverse=%t: base metadata not independently preserved: %+v", reverse, family)
+		}
+		if len(family.SupportedParameters) != 1 || family.SupportedParameters[0] != "tools" {
+			t.Fatalf("invented effort support: %v", family.SupportedParameters)
+		}
+		if base.Thinking != nil || variant.Thinking != nil {
+			t.Fatal("mutated input thinking metadata")
+		}
+		for _, tc := range []struct{ body, want string }{
+			{`{"thinking":{"type":"enabled"}}`, variant.ID},
+			{`{"thinking":{"type":"disabled"}}`, base.ID},
+		} {
+			resolved, err := ResolveCursorModel(family.ID, []byte(tc.body), "claude", got)
+			if err != nil || resolved != tc.want {
+				t.Fatalf("%s: got %q, %v; want %q", tc.body, resolved, err, tc.want)
+			}
+		}
+		base.Thinking = &registry.ThinkingSupport{Min: 1024, Max: 32768, ZeroAllowed: true}
+		got = AddCursorModelFamilies(models)
+		if got[index].Thinking != base.Thinking {
+			t.Fatal("replaced existing thinking metadata")
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,21 +11,24 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-type CursorModelVariant struct {
+// ErrCursorVariantUnavailable identifies a combination absent from this account.
+var ErrCursorVariantUnavailable = errors.New("cursor model variant unavailable")
+
+type cursorModelVariant struct {
 	ID       string
 	Effort   string
 	Thinking bool
 	Fast     bool
 }
 
-type CursorModelFamily struct {
+type cursorModelFamily struct {
 	ID       string
-	Variants []CursorModelVariant
+	Variants []cursorModelVariant
 }
 
 func AddCursorModelFamilies(models []*registry.ModelInfo) []*registry.ModelInfo {
 	result := append([]*registry.ModelInfo(nil), models...)
-	for _, family := range CursorModelFamilies(models) {
+	for _, family := range cursorModelFamilies(models) {
 		if len(family.Variants) == 1 && family.Variants[0].ID == family.ID {
 			continue
 		}
@@ -52,7 +56,9 @@ func AddCursorModelFamilies(models []*registry.ModelInfo) []*registry.ModelInfo 
 		}
 		levels := []string{}
 		seen := map[string]bool{}
+		hasThinking := false
 		for _, variant := range family.Variants {
+			hasThinking = hasThinking || variant.Thinking
 			if variant.Effort != "" && !seen[variant.Effort] {
 				levels = append(levels, variant.Effort)
 				seen[variant.Effort] = true
@@ -61,6 +67,8 @@ func AddCursorModelFamilies(models []*registry.ModelInfo) []*registry.ModelInfo 
 		if len(levels) > 0 {
 			copy.Thinking = &registry.ThinkingSupport{Levels: levels}
 			copy.SupportedParameters = append(append([]string(nil), copy.SupportedParameters...), "reasoning_effort")
+		} else if hasThinking && copy.Thinking == nil {
+			copy.Thinking = &registry.ThinkingSupport{}
 		}
 		if index >= 0 {
 			result[index] = &copy
@@ -71,8 +79,8 @@ func AddCursorModelFamilies(models []*registry.ModelInfo) []*registry.ModelInfo 
 	return result
 }
 
-func cursorVariant(id string) (string, CursorModelVariant) {
-	v := CursorModelVariant{ID: id}
+func cursorVariant(id string) (string, cursorModelVariant) {
+	v := cursorModelVariant{ID: id}
 	base := id
 	for {
 		cut := strings.LastIndexByte(base, '-')
@@ -101,9 +109,8 @@ func cursorVariant(id string) (string, CursorModelVariant) {
 	return base, v
 }
 
-// CursorModelFamilies derives selectable families exclusively from advertised IDs.
-func CursorModelFamilies(models []*registry.ModelInfo) []CursorModelFamily {
-	groups := map[string][]CursorModelVariant{}
+func cursorModelFamilies(models []*registry.ModelInfo) []cursorModelFamily {
+	groups := map[string][]cursorModelVariant{}
 	seen := map[string]bool{}
 	for _, model := range models {
 		if model == nil || model.ID == "" || seen[model.ID] {
@@ -113,52 +120,72 @@ func CursorModelFamilies(models []*registry.ModelInfo) []CursorModelFamily {
 		base, variant := cursorVariant(model.ID)
 		groups[base] = append(groups[base], variant)
 	}
-	families := make([]CursorModelFamily, 0, len(groups))
+	families := make([]cursorModelFamily, 0, len(groups))
 	for id, variants := range groups {
 		sort.Slice(variants, func(i, j int) bool { return variants[i].ID < variants[j].ID })
-		families = append(families, CursorModelFamily{ID: id, Variants: variants})
+		families = append(families, cursorModelFamily{ID: id, Variants: variants})
 	}
 	sort.Slice(families, func(i, j int) bool { return families[i].ID < families[j].ID })
 	return families
 }
 
-// ResolveCursorModel preserves explicit variant IDs and maps family options to
-// an advertised variant. Effort defaults are ignored for families without effort
-// variants; unsupported combinations of advertised dimensions return errors.
-func ResolveCursorModel(model string, payload []byte, format string, models []*registry.ModelInfo) (string, error) {
-	base, _ := cursorVariant(model)
-	if base != model {
-		return model, nil
-	}
-	var variants []CursorModelVariant
-	for _, family := range CursorModelFamilies(models) {
-		if family.ID == model {
-			variants = family.Variants
-			break
+type cursorModelOptions struct {
+	effort       string
+	thinkingType string
+	fast         bool
+}
+
+func cursorOptions(model string, payload []byte, format string) (cursorModelOptions, error) {
+	options := cursorModelOptions{effort: thinking.ExtractReasoningEffort(nil, format, model)}
+	if options.effort == "" {
+		options.effort = thinking.ExtractReasoningEffort(payload, format, model)
+		options.thinkingType = gjson.GetBytes(payload, "thinking.type").String()
+		// Claude also accepts output_config.effort with enabled thinking.
+		if format == "claude" {
+			if option := gjson.GetBytes(payload, "output_config.effort"); option.Exists() {
+				options.effort = strings.ToLower(strings.TrimSpace(option.String()))
+			}
 		}
 	}
-	if len(variants) == 0 {
-		return model, nil
-	}
-	effort := thinking.ExtractReasoningEffort(payload, format, model)
-	// Claude accepts output_config.effort with enabled as well as adaptive thinking.
-	if format == "claude" {
-		if option := gjson.GetBytes(payload, "output_config.effort"); option.Exists() {
-			effort = strings.ToLower(strings.TrimSpace(option.String()))
-		}
-	}
-	thinkingType := gjson.GetBytes(payload, "thinking.type").String()
-	fast := false
 	for _, path := range []string{"service_tier", "speed"} {
 		value := gjson.GetBytes(payload, path).String()
 		switch value {
 		case "", "auto", "default", "standard":
 		case "fast", "priority":
-			fast = true
+			options.fast = true
 		default:
-			return "", fmt.Errorf("cursor model %s does not support %s=%s", model, path, value)
+			return options, fmt.Errorf("cursor model %s does not support %s=%s", model, path, value)
 		}
 	}
+	return options, nil
+}
+
+// ResolveCursorModel preserves explicit variant IDs and maps family options to
+// an advertised variant. ErrCursorVariantUnavailable allows another account to
+// satisfy a valid combination; other errors describe invalid request options.
+func ResolveCursorModel(model string, payload []byte, format string, models []*registry.ModelInfo) (string, error) {
+	modelName := thinking.ParseSuffix(model).ModelName
+	base, _ := cursorVariant(modelName)
+	if base != modelName {
+		return modelName, nil
+	}
+	var variants []cursorModelVariant
+	for _, info := range models {
+		if info == nil {
+			continue
+		}
+		if family, variant := cursorVariant(info.ID); family == modelName {
+			variants = append(variants, variant)
+		}
+	}
+	if len(variants) == 0 {
+		return model, nil
+	}
+	options, err := cursorOptions(model, payload, format)
+	if err != nil {
+		return "", err
+	}
+	effort, thinkingType, fast := options.effort, options.thinkingType, options.fast
 	hasEffort, hasThinking := false, false
 	for _, v := range variants {
 		hasEffort = hasEffort || v.Effort != ""
@@ -171,10 +198,15 @@ func ResolveCursorModel(model string, payload []byte, format string, models []*r
 	if effort == "auto" {
 		effort = ""
 	}
+	switch effort {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+	default:
+		return "", fmt.Errorf("cursor model %s: unsupported reasoning effort %s", model, effort)
+	}
 	if effort == "" && thinkingType == "" && !fast {
 		for _, v := range variants {
-			if v.ID == model {
-				return model, nil
+			if v.ID == modelName {
+				return modelName, nil
 			}
 		}
 	}
@@ -222,12 +254,12 @@ func ResolveCursorModel(model string, payload []byte, format string, models []*r
 		case "max":
 			score = 1
 		}
-		if score > bestScore {
+		if score > bestScore || (score == bestScore && v.ID < best) {
 			best, bestScore = v.ID, score
 		}
 	}
 	if best != "" {
 		return best, nil
 	}
-	return "", fmt.Errorf("cursor model %s has no advertised variant for effort=%q thinking=%t fast=%t", model, effort, wantThinking, fast)
+	return "", fmt.Errorf("%w: cursor model %s has no advertised variant for effort=%q thinking=%t fast=%t", ErrCursorVariantUnavailable, model, effort, wantThinking, fast)
 }
