@@ -370,18 +370,29 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
+			terminalResponse := false
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
 				if bytes.Equal(data, []byte("[DONE]")) {
 					continue
 				}
-				if detail, ok := parseOpenAIStreamUsage(line); ok {
-					reporter.publish(ctx, detail)
-				} else if useResponses {
-					if detail, ok := parseOpenAIResponsesStreamUsage(line); ok {
-						reporter.publish(ctx, detail)
+				if useResponses {
+					if gjson.ValidBytes(data) {
+						switch gjson.GetBytes(data, "type").String() {
+						case "response.completed", "response.incomplete":
+							terminalResponse = true
+							if detail, ok := helps.ParseCodexUsage(data); ok {
+								reporter.publish(ctx, detail)
+							}
+							reporter.ensurePublished(ctx)
+						case "response.failed", "error":
+							terminalResponse = true
+							reporter.publishFailure(ctx)
+						}
 					}
+				} else if detail, ok := parseOpenAIStreamUsage(line); ok {
+					reporter.publish(ctx, detail)
 				}
 			}
 
@@ -405,11 +416,18 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				if useResponses && from == to {
 					// Scanner removes delimiters; passthrough streams must retain SSE framing.
 					normalizedLine = append(normalizedLine, '\n')
+					if terminalResponse {
+						// Finish the terminal SSE frame without another upstream read.
+						normalizedLine = append(normalizedLine, '\n')
+					}
 				}
 				chunks = sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), body, normalizedLine, &param)
 			}
 			for i := range chunks {
 				out <- cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunks[i])}
+			}
+			if terminalResponse {
+				return
 			}
 		}
 

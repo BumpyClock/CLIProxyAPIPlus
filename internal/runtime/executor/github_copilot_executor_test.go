@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +14,10 @@ import (
 	copilotauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/copilot"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	usagestats "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -956,5 +960,151 @@ func TestGitHubCopilotResponsesStreamPreservesSSEFraming(t *testing.T) {
 	}
 	if joined.String() != wire {
 		t.Fatalf("SSE framing changed: got %q, want %q", joined.String(), wire)
+	}
+}
+
+type copilotUsageCaptureKey struct{}
+type copilotUsageCapturePlugin struct{}
+
+func (copilotUsageCapturePlugin) HandleUsage(ctx context.Context, record usage.Record) {
+	if records, ok := ctx.Value(copilotUsageCaptureKey{}).(chan usage.Record); ok {
+		records <- record
+	}
+}
+
+func TestGitHubCopilotResponsesStreamAccounting(t *testing.T) {
+	// The named plugin retains no test state; capture is scoped to each request context.
+	usage.RegisterNamedPlugin("test:copilot-responses-accounting", copilotUsageCapturePlugin{})
+	const tokenUsage = `{"input_tokens":9,"output_tokens":5,"total_tokens":14,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2}}`
+	const delta = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n"
+	completed := func(usageJSON string) string {
+		return `{"type":"response.completed","response":{"id":"resp_test","status":"completed","output":[],"usage":` + usageJSON + `}}`
+	}
+	for _, tc := range []struct {
+		name         string
+		event        string
+		prefix       string
+		source       string
+		model        string
+		truncated    bool
+		wantFailure  bool
+		wantReadErr  bool
+		wantTokens   int64
+		wantTerminal string
+	}{
+		{name: "nested usage", event: completed(tokenUsage), wantTokens: 14},
+		{name: "completion before transport error", event: completed(tokenUsage), truncated: true, wantTokens: 14},
+		{name: "completion without usage", event: completed("null")},
+		{name: "completion without usage before transport error", event: completed("null"), truncated: true},
+		{name: "early service tier does not publish", prefix: "data: {\"type\":\"response.created\",\"response\":{\"service_tier\":\"default\",\"usage\":null}}\n\n", event: completed(tokenUsage), wantTokens: 14},
+		{name: "early null usage does not publish", prefix: "data: {\"type\":\"response.created\",\"usage\":null}\n\n", event: completed(tokenUsage), wantTokens: 14},
+		{name: "preterminal transport error", truncated: true, wantFailure: true, wantReadErr: true},
+		{name: "metadata before transport error", prefix: "data: {\"type\":\"response.created\",\"service_tier\":\"default\",\"usage\":null}\n\n", truncated: true, wantFailure: true, wantReadErr: true},
+		{name: "explicit failure", event: `{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"Failed"}}}`, wantFailure: true},
+		{name: "error event", event: `{"type":"error","error":{"type":"server_error","message":"Failed"}}`, wantFailure: true},
+		{name: "incomplete is successful", event: `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":` + tokenUsage + `}}`, truncated: true, wantTokens: 14},
+		{name: "Claude terminal conversion", source: "claude", event: completed(tokenUsage), truncated: true, wantTokens: 14, wantTerminal: "event: message_stop\n"},
+		{name: "Chat usage control", source: "openai", model: "gpt-4o", event: `{"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}],"usage":` + tokenUsage + `}`, truncated: true, wantReadErr: true, wantTokens: 14},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := tc.prefix + delta
+			if tc.event != "" {
+				wire += "event: " + gjson.Get(tc.event, "type").String() + "\ndata: " + tc.event + "\n\n"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wantPath := "/responses"
+				if tc.model == "gpt-4o" {
+					wantPath = "/chat/completions"
+				}
+				if r.URL.Path != wantPath {
+					t.Errorf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if tc.truncated {
+					w.Header().Set("Content-Length", fmt.Sprint(len(wire)+100))
+				}
+				_, _ = io.WriteString(w, wire)
+			}))
+			defer server.Close()
+			e := NewGitHubCopilotExecutor(&config.Config{})
+			e.cache["test-token"] = &cachedAPIToken{token: "test-api-token", apiEndpoint: server.URL, expiresAt: time.Now().Add(time.Hour)}
+			auth := &cliproxyauth.Auth{ID: t.Name(), Metadata: map[string]any{"access_token": "test-token"}}
+			records := make(chan usage.Record, 16)
+			ctx := context.WithValue(context.Background(), copilotUsageCaptureKey{}, records)
+			source := tc.source
+			if source == "" {
+				source = "openai-response"
+			}
+			model := tc.model
+			if model == "" {
+				model = "gpt-5-codex"
+			}
+			payload := []byte(fmt.Sprintf(`{"model":%q,"input":"Hello","messages":[{"role":"user","content":"Hello"}],"stream":true}`, model))
+			result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: model, Payload: payload}, cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FromString(source), OriginalRequest: payload,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var joined strings.Builder
+			var streamErr error
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					streamErr = chunk.Err
+				}
+				joined.Write(chunk.Payload)
+			}
+			if tc.wantReadErr {
+				if !errors.Is(streamErr, io.ErrUnexpectedEOF) {
+					t.Errorf("stream error = %v, want unexpected EOF", streamErr)
+				}
+			} else if streamErr != nil {
+				t.Errorf("stream error = %v, want nil", streamErr)
+			}
+			if source == "openai-response" && joined.String() != wire {
+				t.Errorf("SSE framing changed: got %q, want %q", joined.String(), wire)
+			}
+			if tc.wantTerminal != "" && !strings.Contains(joined.String(), tc.wantTerminal) {
+				t.Errorf("terminal %q missing from %q", tc.wantTerminal, joined.String())
+			}
+
+			// A queue barrier verifies all records, including duplicates, without sleeping.
+			usage.PublishRecord(ctx, usage.Record{Model: "accounting-barrier"})
+			stats := usagestats.NewRequestStatistics()
+			var captured []usage.Record
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+		drain:
+			for {
+				select {
+				case record := <-records:
+					if record.Model == "accounting-barrier" {
+						break drain
+					}
+					captured = append(captured, record)
+					stats.Record(ctx, record)
+				case <-timer.C:
+					t.Fatal("timed out waiting for usage queue barrier")
+				}
+			}
+			if len(captured) != 1 {
+				t.Fatalf("usage records = %d, want exactly one", len(captured))
+			}
+			record := captured[0]
+			if record.Failed != tc.wantFailure || record.Detail.TotalTokens != tc.wantTokens {
+				t.Errorf("usage = %+v, want failed=%v total=%d", record, tc.wantFailure, tc.wantTokens)
+			}
+			if tc.wantTokens != 0 && (record.Detail.InputTokens != 9 || record.Detail.OutputTokens != 5 || record.Detail.CachedTokens != 3 || record.Detail.ReasoningTokens != 2) {
+				t.Errorf("token breakdown = %+v, want input=9 output=5 cached=3 reasoning=2", record.Detail)
+			}
+			snapshot := stats.Snapshot()
+			wantFailures := int64(0)
+			if tc.wantFailure {
+				wantFailures = 1
+			}
+			if snapshot.TotalRequests != 1 || snapshot.FailureCount != wantFailures || snapshot.SuccessCount != 1-wantFailures || snapshot.TotalTokens != tc.wantTokens {
+				t.Errorf("management counts = %+v, want requests=1 failures=%d total=%d", snapshot, wantFailures, tc.wantTokens)
+			}
+		})
 	}
 }
