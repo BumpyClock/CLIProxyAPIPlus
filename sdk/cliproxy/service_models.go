@@ -10,6 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -145,6 +146,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "cursor":
 		models = applyExcludedModels(executor.FetchCursorModels(ctx, a, s.cfg), excluded)
+		helps.StoreCursorRoutingModels(a.ID, models)
+		models = applyExcludedModels(helps.AddCursorModelFamilies(models), excluded)
 	case "github-copilot":
 		models = applyExcludedModels(executor.FetchGitHubCopilotModels(ctx, a, s.cfg), excluded)
 	case "kiro":

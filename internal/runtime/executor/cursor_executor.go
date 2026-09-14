@@ -420,6 +420,16 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, fmt.Errorf("cursor: access token not found")
 	}
 
+	optionPayload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		optionPayload = opts.OriginalRequest
+	}
+	upstreamModel, errResolve := helps.ResolveCursorModel(req.Model, optionPayload, opts.SourceFormat.String(), helps.CursorRoutingModels(auth.ID, cursorModelsOrFallback(auth.ID)))
+	if errResolve != nil {
+		return resp, cursorStatusErr{code: http.StatusBadRequest, msg: errResolve.Error()}
+	}
+	log.WithFields(log.Fields{"requested_model": req.Model, "upstream_model": upstreamModel}).Debug("cursor: resolved model variant")
+
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	payload := req.Payload
@@ -448,7 +458,7 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		log.Debugf("cursor: non-stream request with %d turn(s), flattening into user text", len(parsed.Turns))
 		flattenConversationIntoUserText(parsed)
 	}
-	params := buildRunRequestParams(parsed, conversationID, req.Model)
+	params := buildRunRequestParams(parsed, conversationID, upstreamModel)
 
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
@@ -580,6 +590,16 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	// Translate input to OpenAI format if needed
+	optionPayload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		optionPayload = opts.OriginalRequest
+	}
+	upstreamModel, errResolve := helps.ResolveCursorModel(req.Model, optionPayload, opts.SourceFormat.String(), helps.CursorRoutingModels(auth.ID, cursorModelsOrFallback(auth.ID)))
+	if errResolve != nil {
+		return nil, cursorStatusErr{code: http.StatusBadRequest, msg: errResolve.Error()}
+	}
+	log.WithFields(log.Fields{"requested_model": req.Model, "upstream_model": upstreamModel}).Debug("cursor: resolved model variant")
+
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	payload := req.Payload
@@ -673,11 +693,11 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	saved, hasCheckpoint := e.checkpoints[checkpointKey]
 	e.mu.Unlock()
 
-	params := buildRunRequestParams(parsed, conversationId, req.Model)
+	params := buildRunRequestParams(parsed, conversationId, upstreamModel)
 
 	if coldToolContinuation {
 		flattenConversationIntoUserText(parsed)
-		params = buildRunRequestParams(parsed, conversationId, req.Model)
+		params = buildRunRequestParams(parsed, conversationId, upstreamModel)
 	} else if hasCheckpoint && saved.data != nil && saved.authID == authID {
 		// Same auth — use checkpoint normally.
 		log.Debugf("cursor: using saved checkpoint (%d bytes) for conv=%s auth=%s", len(saved.data), checkpointKey, authID)
@@ -698,13 +718,13 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		e.mu.Unlock()
 		if len(parsed.Turns) > 0 {
 			flattenConversationIntoUserText(parsed)
-			params = buildRunRequestParams(parsed, conversationId, req.Model)
+			params = buildRunRequestParams(parsed, conversationId, upstreamModel)
 		}
 	} else if len(parsed.Turns) > 0 {
 		// Cursor reliably reads UserText, while structured turns may be ignored.
 		log.Debugf("cursor: no checkpoint, flattening %d turns into user text", len(parsed.Turns))
 		flattenConversationIntoUserText(parsed)
-		params = buildRunRequestParams(parsed, conversationId, req.Model)
+		params = buildRunRequestParams(parsed, conversationId, upstreamModel)
 	}
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
