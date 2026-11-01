@@ -25,3 +25,7 @@ README-ccs-fork.md merge=ours
 # eceasy/cli-proxy-api). Keep ours so upstream sync does not silently revert
 # the image path back to upstream's.
 docker-compose.yml merge=ours
+
+# Keep Git Bash entrypoints portable when autocrlf is enabled.
+.githooks/* text eol=lf
+scripts/install-git-hooks.sh text eol=lf

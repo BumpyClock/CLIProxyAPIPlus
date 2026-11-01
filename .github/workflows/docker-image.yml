@@ -11,7 +11,7 @@ run-name: >-
 #     GITHUB_TOKEN events do not cascade)
 #   - workflow_dispatch with optional `tag` input
 #
-# Runner: self-hosted `cliproxy` (docker host LXC). QEMU + buildx produce both
+# Runner: opt-in Boat or existing self-hosted `cliproxy` Docker host. QEMU + buildx produce both
 # linux/amd64 and linux/arm64 from a single x64 host.
 #
 # Registries:
@@ -22,6 +22,14 @@ run-name: >-
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: 'Docker build host (tag pushes retain self-hosted)'
+        required: true
+        type: choice
+        default: self-hosted
+        options:
+          - self-hosted
+          - boat
       tag:
         description: 'Existing tag to build, e.g. v6.9.45-0'
         required: false
@@ -52,7 +60,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted, cliproxy]
+    runs-on: ${{ inputs.runner == 'boat' && 'boat' || fromJSON('["self-hosted","cliproxy"]') }}
     steps:
       - name: Resolve build ref
         id: ref
@@ -103,7 +111,7 @@ jobs:
           EXPECTED_COMMIT: ${{ inputs.commit }}
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 
-      - name: Set up QEMU (for arm64 emulation on x64 self-hosted runner)
+      - name: Set up QEMU (for arm64 emulation on x64 runner)
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
         with:
           platforms: arm64

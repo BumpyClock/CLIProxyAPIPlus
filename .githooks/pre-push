@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+paths=$(mktemp)
+output=$(mktemp -d)
+trap 'rm -f "$paths"; rm -rf "$output"' EXIT
+
+head=$(git rev-parse HEAD)
+zero=${head//?/0}
+seen=false
+update=false
+full=false
+while read -r local_ref local_sha remote_ref remote_sha extra; do
+    seen=true
+    if [[ -z "$local_ref" || -z "$remote_ref" || -n "${extra:-}" || ${#local_sha} != ${#head} || ${#remote_sha} != ${#head} || "$local_sha$remote_sha" == *[!0-9a-f]* ]]; then
+        echo 'pre-push: malformed ref record; refusing to skip checks.' >&2
+        exit 1
+    fi
+    [[ "$local_sha" == "$zero" ]] && continue
+    update=true
+    if [[ "$(git rev-parse --verify "$local_sha^{commit}")" != "$head" ]]; then
+        echo 'pre-push: switch to the pushed commit in a clean checkout first; only HEAD can be checked.' >&2
+        exit 1
+    fi
+    if [[ "$remote_sha" == "$zero" ]] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        full=true
+    else
+        git diff --name-only --no-renames -z "$remote_sha" "$local_sha" -- >> "$paths"
+    fi
+done
+[[ "$seen" == true && "$update" == false ]] && exit 0
+status=$(git status --porcelain --untracked-files=normal)
+if [[ -n "$status" ]]; then
+    echo 'pre-push: use a clean checkout. Nothing is stashed automatically.' >&2
+    exit 1
+fi
+if ! command -v go >/dev/null || ! command -v gofmt >/dev/null; then
+    echo 'pre-push: prepare Go 1.26+ and run go mod download first. No hook-time tool installation.' >&2
+    exit 1
+fi
+if [[ "$seen" == false || "$full" == true ]]; then
+    git ls-files -z -- '*.go' > "$paths"
+fi
+while IFS= read -r -d '' path; do
+    case "$path" in
+        go.mod|go.sum|go.work|go.work.sum|.github/*|.githooks/*|scripts/*)
+            full=true ;;
+    esac
+done < "$paths"
+if [[ "$full" == true ]]; then
+    git ls-files -z -- '*.go' > "$paths"
+fi
+while IFS= read -r -d '' path; do
+    if [[ "$path" == *.go && -f "$path" ]]; then
+        formatted=$(gofmt -l -- "$path")
+        if [[ -n "$formatted" ]]; then
+            printf 'pre-push: format %s with gofmt before pushing. No files changed.\n' "$path" >&2
+            exit 1
+        fi
+    fi
+done < "$paths"
+
+# Use prepared modules/toolchain only. Missing dependencies fail, never download.
+export GOTOOLCHAIN=local GOPROXY=off
+go build -mod=readonly -o "$output/server" ./cmd/server
+go vet -mod=readonly ./...
