@@ -1578,7 +1578,10 @@ const (
 // FetchGitHubCopilotModels dynamically fetches available models from the GitHub Copilot API.
 // It exchanges the GitHub access token stored in auth.Metadata for a Copilot API token,
 // then queries the /models endpoint. Falls back to the static registry on any failure.
-func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) (models []*registry.ModelInfo) {
+	defer func() {
+		helps.EnrichGitHubCopilotModels(models, registry.GetCodexClientModelsJSON())
+	}()
 	if auth == nil {
 		log.Debug("github-copilot: auth is nil, using static models")
 		return registry.GetGitHubCopilotModels()
@@ -1611,7 +1614,7 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 	}
 
 	now := time.Now().Unix()
-	models := make([]*registry.ModelInfo, 0, len(entries))
+	models = make([]*registry.ModelInfo, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		if entry.ID == "" {

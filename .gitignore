@@ -34,6 +34,7 @@ auths/*
 
 # Documentation
 docs/*
+!docs/github-copilot-models.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
