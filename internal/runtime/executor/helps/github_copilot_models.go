@@ -37,7 +37,7 @@ func EnrichGitHubCopilotModels(models []*registry.ModelInfo, catalog []byte) {
 		}
 	}
 	for _, model := range models {
-		if model.Thinking != nil || model.ExplicitThinking {
+		if model.Thinking != nil {
 			continue
 		}
 		if levels := levelsByID[model.ID]; len(levels) > 0 {

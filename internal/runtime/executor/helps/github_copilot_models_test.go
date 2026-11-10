@@ -106,18 +106,16 @@ func TestEnrichGitHubCopilotModelsPreservesRestrictionsAndLabels(t *testing.T) {
 		name     string
 		display  string
 		thinking *registry.ThinkingSupport
-		explicit bool
 		wantName string
 	}{
 		{name: "levels", display: "Copilot Astra", thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}}, wantName: "GH Copilot Astra"},
 		{name: "budget", display: "GH Copilot Astra", thinking: &registry.ThinkingSupport{Min: 1024, Max: 8192, ZeroAllowed: true, DynamicAllowed: true}, wantName: "GH Copilot Astra"},
 		{name: "empty support", thinking: &registry.ThinkingSupport{}, wantName: "GH gpt-6-astra"},
-		{name: "explicitly disabled", explicit: true, wantName: "GH gpt-6-astra"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			model := &registry.ModelInfo{
-				ID: "gpt-6-astra", DisplayName: tt.display, Thinking: tt.thinking, ExplicitThinking: tt.explicit,
+				ID: "gpt-6-astra", DisplayName: tt.display, Thinking: tt.thinking,
 				ContextLength: 168000, MaxCompletionTokens: 8192,
 			}
 			want := *model
