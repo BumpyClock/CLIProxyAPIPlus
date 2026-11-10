@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 func TestEnrichGitHubCopilotModels(t *testing.T) {
