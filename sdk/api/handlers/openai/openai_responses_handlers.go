@@ -1094,7 +1094,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -1120,7 +1120,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -1136,7 +1136,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponseViaChat(c *gin.Con
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, OpenAI, modelName, chatJSON, "")
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -1398,7 +1398,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponseViaChat(c *gin.Contex
 				errChan = nil
 				continue
 			}
-			h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)
 			} else {
@@ -1410,8 +1410,8 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponseViaChat(c *gin.Contex
 				// Stream closed without data. Surface a buffered pending error
 				// before committing SSE headers, so a failed upstream never
 				// looks like a successful empty stream.
-				if pErr, pending := pendingOpenAIStreamError(errChan); pending {
-					h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(pErr))
+				if pErr, pending := handlers.PendingStreamError(errChan); pending {
+					h.WriteErrorResponse(c, pErr)
 					cliCancel(pErr.Error)
 					return
 				}

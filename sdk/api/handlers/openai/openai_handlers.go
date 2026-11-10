@@ -548,7 +548,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -564,7 +564,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponseViaResponses(c *gin.Context
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, OpenaiResponse, modelName, rawJSON, h.GetAlt(c))
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -658,7 +658,7 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 				return
 			}
 			// Upstream failed immediately. Return proper error status and JSON.
-			h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)
 			} else {
@@ -676,7 +676,7 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 						h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, make(chan []byte), pendingErrors, false)
 						return
 					}
-					h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+					h.WriteErrorResponse(c, errMsg)
 					if errMsg != nil {
 						cliCancel(errMsg.Error)
 					} else {
@@ -752,7 +752,7 @@ func (h *OpenAIAPIHandler) handleStreamingResponseViaResponses(c *gin.Context, r
 				errChan = nil
 				continue
 			}
-			h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)
 			} else {
@@ -764,8 +764,8 @@ func (h *OpenAIAPIHandler) handleStreamingResponseViaResponses(c *gin.Context, r
 				// Stream closed without data. Surface a buffered pending error
 				// before committing SSE headers, so a failed upstream never
 				// looks like a successful empty stream.
-				if pErr, pending := pendingOpenAIStreamError(errChan); pending {
-					h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(pErr))
+				if pErr, pending := handlers.PendingStreamError(errChan); pending {
+					h.WriteErrorResponse(c, pErr)
 					cliCancel(pErr.Error)
 					return
 				}
@@ -808,7 +808,7 @@ func (h *OpenAIAPIHandler) handleCompletionsNonStreamingResponse(c *gin.Context,
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -915,7 +915,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 						h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, make(chan []byte), pendingErrors, false)
 						return
 					}
-					h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+					h.WriteErrorResponse(c, errMsg)
 					if errMsg != nil {
 						cliCancel(errMsg.Error)
 					} else {
@@ -1088,25 +1088,6 @@ func (h *OpenAIAPIHandler) handleStreamResult(c *gin.Context, flusher http.Flush
 	})
 }
 
-// pendingOpenAIStreamError returns an immediately available non-nil stream error
-// buffered on errChan. It mirrors pendingClaudeStreamError in the Claude handler:
-// the initial peek consumes a queued upstream failure before committing SSE
-// headers so a failed stream never looks like a successful empty stream.
-func pendingOpenAIStreamError(errs <-chan *interfaces.ErrorMessage) (*interfaces.ErrorMessage, bool) {
-	if errs == nil {
-		return nil, false
-	}
-	select {
-	case errMsg, ok := <-errs:
-		if !ok || errMsg == nil {
-			return nil, false
-		}
-		return errMsg, true
-	default:
-		return nil, false
-	}
-}
-
 // sanitizeOpenAIErrorMessage is the trust-boundary sanitizer for the OpenAI
 // pre-output sinks. It preserves a DirectResponse only when it is explicitly
 // trusted (local plugin/interceptor); every other error path sanitizes
@@ -1132,7 +1113,7 @@ func sanitizeOpenAIStrictErrorMessage(errMsg *interfaces.ErrorMessage) *interfac
 	safe.StatusCode = status
 	safe.DirectResponse = false
 	safe.Body = nil
-	if errMsg.Error != nil {
+	if _, sanitized := errMsg.Error.(*openAIStreamSanitizedError); errMsg.Error != nil && !sanitized {
 		safe.Error = &openAIStreamSanitizedError{
 			message:      openAIStreamErrorText(errMsg.Error.Error(), status),
 			safeHeaders:  coreauth.SafeResponseHeaders(errMsg.Error),

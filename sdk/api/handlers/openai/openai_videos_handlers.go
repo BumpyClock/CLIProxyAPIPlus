@@ -815,7 +815,7 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, executionModel, payload, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		if errMsg.Error != nil {
 			cliCancel(errMsg.Error)
 		} else {
@@ -827,7 +827,7 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 	out, err := buildVideosRetrieveAPIResponseFromXAI(videoID, resp, executionModel)
 	if err != nil {
 		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(err)
 		return
 	}
@@ -878,7 +878,7 @@ func (h *OpenAIAPIHandler) VideosContent(c *gin.Context) {
 	resp, _, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, executionModel, payload, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		if errMsg.Error != nil {
 			cliCancel(errMsg.Error)
 		} else {
@@ -891,7 +891,7 @@ func (h *OpenAIAPIHandler) VideosContent(c *gin.Context) {
 	contentURL, err := xaiVideoContentURLFromPayload(resp)
 	if err != nil {
 		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(err)
 		return
 	}
@@ -910,7 +910,7 @@ func (h *OpenAIAPIHandler) writeVideoContentFromURL(c *gin.Context, contentURL s
 			StatusCode: clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway),
 			Error:      err,
 		}
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		return err
 	}
 
@@ -921,7 +921,7 @@ func (h *OpenAIAPIHandler) writeVideoContentFromURL(c *gin.Context, contentURL s
 			StatusCode: clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway),
 			Error:      err,
 		}
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		return err
 	}
 	defer func() {
@@ -937,7 +937,7 @@ func (h *OpenAIAPIHandler) writeVideoContentFromURL(c *gin.Context, contentURL s
 			errDownloadStatus = fmt.Errorf("video content download failed: %s", resp.Status)
 		}
 		errMsg := &interfaces.ErrorMessage{StatusCode: resp.StatusCode, Error: errDownloadStatus}
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		return errDownloadStatus
 	}
 
@@ -1009,7 +1009,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosNative(c *gin.Context, rawJSON []byte
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, executionModel, rawJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		if errMsg.Error != nil {
 			cliCancel(errMsg.Error)
 		} else {
@@ -1044,7 +1044,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosCreate(c *gin.Context, xaiReq []byte,
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, routingModel, xaiReq, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		if errMsg.Error != nil {
 			cliCancel(errMsg.Error)
 		} else {
@@ -1056,7 +1056,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosCreate(c *gin.Context, xaiReq []byte,
 	out, err := buildVideosCreateAPIResponseFromXAI(resp, meta)
 	if err != nil {
 		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
-		h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
+		h.WriteErrorResponse(c, errMsg)
 		cliCancel(err)
 		return
 	}

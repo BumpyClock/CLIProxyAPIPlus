@@ -43,6 +43,7 @@ func (*prematureResponsesStreamExecutor) Execute(context.Context, *coreauth.Auth
 func (*prematureResponsesStreamExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
 	if req.Model == directInitialErrorResponsesModel {
 		return nil, &coreexecutor.RequestTerminatedError{
+			Trusted:    true,
 			HTTPStatus: http.StatusTooManyRequests,
 			Header:     http.Header{"Retry-After": []string{"17"}, "X-Plugin-Response": []string{"true"}},
 			Body:       []byte(`{"error":{"message":"plugin direct response"}}`),
