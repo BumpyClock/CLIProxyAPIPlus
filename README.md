@@ -198,6 +198,9 @@ while retaining Plus providers, ordered cross-model fallback on exhausted
   `github.com/router-for-me/CLIProxyAPI/v7` to `github.com/router-for-me/CLIProxyAPI/v8`.
   Builds require Go 1.26.10 or newer.
 
+Maintainers can rerun the server build, complete test suite, and race-enabled
+fork compatibility checks with `bash .github/scripts/verify-upstream-sync.sh`.
+
 ## Management API
 
 See the [v8 management reference](docs/management-api-v8.md) and the
