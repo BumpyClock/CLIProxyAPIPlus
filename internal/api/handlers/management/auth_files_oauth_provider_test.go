@@ -185,7 +185,7 @@ func TestAuthFilesOAuthProvider_LoginLifecycle(t *testing.T) {
 				if got := start.Get("state").String(); got != state {
 					t.Fatalf("login state = %q, want %q: %s", got, state, start.Raw)
 				}
-				poll := oauthProviderTestGET(t, router, "/v8/management/get-auth-status?state="+state)
+				poll := oauthProviderTestGET(t, router, "/v8/management/oauth/status?state="+state)
 				if got := poll.Get("status").String(); got != "ok" {
 					t.Fatalf("poll status = %q: %s", got, poll.Raw)
 				}
@@ -391,7 +391,7 @@ func oauthProviderTestRouter(h *Handler) *gin.Engine {
 	})
 	v8.GET("/credentials", h.ListAuthFiles)
 	v8.GET("/oauth/auth-url", h.StartOAuthV8)
-	v8.GET("/get-auth-status", h.GetAuthStatus)
+	v8.GET("/oauth/status", h.GetAuthStatus)
 	router.GET("/v0/management/auth-files", h.ListAuthFiles)
 	return router
 }
