@@ -604,7 +604,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 	}
 	root = expandConfigAliases(root)
 	sections := v8AllowedRoots()
-	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client"} {
+	for _, shared := range append([]string{"api-keys", "plugins", "quota-exceeded", "routing", "client"}, v8PlusNativeRoots...) {
 		delete(sections, shared)
 	}
 	for i := 0; i < len(root.Content); i += 2 {
@@ -635,6 +635,9 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 
 func v8AllowedRoots() map[string]bool {
 	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true}
+	for _, root := range v8PlusNativeRoots {
+		allowed[root] = true
+	}
 	for _, path := range v8Paths {
 		section, _, _ := strings.Cut(path.current, ".")
 		allowed[section] = true

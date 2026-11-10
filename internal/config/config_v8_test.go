@@ -506,7 +506,7 @@ proxy-url: old
 	if err = ValidateV8Config(saved); err != nil {
 		t.Fatalf("saved migration is invalid: %v", err)
 	}
-	for _, key := range []string{"auth", "ampcode", "amp-upstream-url", "amp-upstream-api-key", "generative-language-api-key", "home"} {
+	for _, key := range []string{"auth", "ampcode.old", "amp-upstream-url", "amp-upstream-api-key", "generative-language-api-key", "home"} {
 		if !strings.Contains(string(saved), "# "+key+":") {
 			t.Errorf("obsolete setting %s was discarded rather than commented", key)
 		}

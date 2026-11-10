@@ -1,0 +1,29 @@
+# Synthetic fork configuration. No usable credentials.
+port: 8317
+fallback-chain:
+  synthetic-primary:
+    candidates:
+      - provider: github-copilot
+        model: synthetic-fallback
+    sticky-primary: true
+    exhaustion-cooldown: 45s
+kiro:
+  - access-token: synthetic-test-only
+    region: us-east-1
+    preferred-endpoint: ide
+kiro-fingerprint:
+  kiro-version: synthetic-version
+kiro-preferred-endpoint: ide
+kiro-rate-limit:
+  enabled: true
+  daily-max-requests: 321
+kiro-system-prompt-inject-enable: false
+kiro-truncation-detector-enable: false
+kiro-extract-thinking-tag-enable: false
+ampcode:
+  upstream-url: https://amp.example.invalid
+  force-model-mappings: true
+  model-mappings:
+    - from: synthetic-primary
+      to: synthetic-fallback
+incognito-browser: true

@@ -313,5 +313,11 @@ files in their original layout; existing v8 files are saved in the latest v8
 layout. `PUT /v0/management/config.yaml` still replaces the complete file and
 accepts legacy, new, or mixed layouts, normalizing v8 documents on save.
 
+Fork settings retain their native root paths in both layouts. These include
+`fallback-chain`, `kiro` and the `kiro-*` settings, `ampcode`, and
+`incognito-browser`. V8 reads and unrelated v8 or v0 writes preserve their active
+values. These roots alone do not trigger migration of a legacy file. Unknown
+fields still follow the normal v8 validation and migration rules.
+
 Plugin OAuth uses the shared v8 login endpoint. Other plugin-defined HTTP
 extensions retain their declared `/v0/management` routes.
