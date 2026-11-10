@@ -181,9 +181,27 @@ Available tags:
 - GHCR: [`ghcr.io/kaitranntt/cli-proxy-api-plus`](https://github.com/kaitranntt/CLIProxyAPIPlus/pkgs/container/cli-proxy-api-plus)
 [Claude Code with a Codex backend](examples/claude-code-codex/README.md): optional visible progress, classifier routing, image-tool pass-through, and latency diagnostics.
 
+## Upgrading to v8
+
+This fork incorporates Plus upstream `0341bcc4` and core CLIProxyAPI v8.0.64,
+while retaining Plus providers, ordered cross-model fallback on exhausted
+402/429 credential pools, and [Copilot model labels and reasoning metadata](docs/github-copilot-models.md).
+
+- Back up `config.yaml` and credential files before running the upgraded server.
+- Existing legacy configuration remains readable. Successful v8 management
+  configuration writes migrate the saved layout. Review `config.example.yaml`
+  before editing configuration or changing automation.
+- `/v0/management` remains available for existing Management Center clients.
+  New integrations can use `/v8/management`; its configuration paths and payloads
+  differ from v0. See the [v8 management reference](docs/management-api-v8.md).
+- Embedded Go consumers must change module imports from
+  `github.com/router-for-me/CLIProxyAPI/v7` to `github.com/router-for-me/CLIProxyAPI/v8`.
+  Builds require Go 1.26.10 or newer.
+
 ## Management API
 
-see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
+See the [v8 management reference](docs/management-api-v8.md) and the
+[legacy management API guide](https://help.router-for.me/management/api).
 
 ## Usage Statistics
 
