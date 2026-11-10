@@ -225,7 +225,7 @@ func TestCancelOAuthSessionAndCallbackRejectAfterCancel(t *testing.T) {
 	}
 }
 
-func TestBeginOAuthSessionSaveCoversBuiltinAndPluginProviders(t *testing.T) {
+func TestClaimOAuthSessionCommitCoversBuiltinAndPluginProviders(t *testing.T) {
 	store := newOAuthSessionStore(time.Minute)
 	replaceOAuthSessionStoreForTest(t, store)
 
@@ -250,14 +250,14 @@ func TestBeginOAuthSessionSaveCoversBuiltinAndPluginProviders(t *testing.T) {
 		state := provider + "-begin-save"
 		store.Register(state, provider)
 
-		if errBegin := beginOAuthSessionSave(state, provider); errBegin != nil {
+		if errBegin := claimOAuthSessionCommit(state, provider); errBegin != nil {
 			t.Fatalf("%s begin save error = %v, want nil", provider, errBegin)
 		}
 		if CancelOAuthSession(state) {
 			t.Fatalf("%s CancelOAuthSession() = true after save began, want false", provider)
 		}
-		if errBegin := beginOAuthSessionSave(state, provider); !errors.Is(errBegin, errOAuthSessionSaving) {
-			t.Fatalf("%s repeated begin error = %v, want %v", provider, errBegin, errOAuthSessionSaving)
+		if errBegin := claimOAuthSessionCommit(state, provider); !errors.Is(errBegin, errOAuthSessionNotPending) {
+			t.Fatalf("%s repeated begin error = %v, want %v", provider, errBegin, errOAuthSessionNotPending)
 		}
 	}
 
@@ -265,7 +265,7 @@ func TestBeginOAuthSessionSaveCoversBuiltinAndPluginProviders(t *testing.T) {
 	if errRegister := store.RegisterPlugin(pluginState, "gemini-cli", nil); errRegister != nil {
 		t.Fatalf("RegisterPlugin() error = %v", errRegister)
 	}
-	if errBegin := beginOAuthSessionSave(pluginState, "gemini-cli"); errBegin != nil {
+	if errBegin := claimOAuthSessionCommit(pluginState, "gemini-cli"); errBegin != nil {
 		t.Fatalf("plugin begin save error = %v, want nil", errBegin)
 	}
 	if CancelOAuthSession(pluginState) {
@@ -273,7 +273,7 @@ func TestBeginOAuthSessionSaveCoversBuiltinAndPluginProviders(t *testing.T) {
 	}
 }
 
-func TestBeginOAuthSessionSaveRejectsCancelledCompletedErroredAndMismatchedSessions(t *testing.T) {
+func TestClaimOAuthSessionCommitRejectsCancelledCompletedErroredAndMismatchedSessions(t *testing.T) {
 	store := newOAuthSessionStore(time.Minute)
 	replaceOAuthSessionStoreForTest(t, store)
 
@@ -281,24 +281,24 @@ func TestBeginOAuthSessionSaveRejectsCancelledCompletedErroredAndMismatchedSessi
 	if !CancelOAuthSession("cancelled-save") {
 		t.Fatal("CancelOAuthSession() = false, want true")
 	}
-	if errBegin := beginOAuthSessionSave("cancelled-save", "anthropic"); !errors.Is(errBegin, errOAuthSessionNotPending) {
+	if errBegin := claimOAuthSessionCommit("cancelled-save", "anthropic"); !errors.Is(errBegin, errOAuthSessionNotPending) {
 		t.Fatalf("cancelled begin error = %v, want %v", errBegin, errOAuthSessionNotPending)
 	}
 
 	store.Register("completed-save", "codex")
 	store.Complete("completed-save")
-	if errBegin := beginOAuthSessionSave("completed-save", "codex"); !errors.Is(errBegin, errOAuthSessionNotPending) {
+	if errBegin := claimOAuthSessionCommit("completed-save", "codex"); !errors.Is(errBegin, errOAuthSessionNotPending) {
 		t.Fatalf("completed begin error = %v, want %v", errBegin, errOAuthSessionNotPending)
 	}
 
 	store.Register("error-save", "anthropic")
 	store.SetError("error-save", "Authentication failed")
-	if errBegin := beginOAuthSessionSave("error-save", "anthropic"); !errors.Is(errBegin, errOAuthSessionNotPending) {
+	if errBegin := claimOAuthSessionCommit("error-save", "anthropic"); !errors.Is(errBegin, errOAuthSessionNotPending) {
 		t.Fatalf("error begin error = %v, want %v", errBegin, errOAuthSessionNotPending)
 	}
 
 	store.Register("provider-mismatch", "codex")
-	if errBegin := beginOAuthSessionSave("provider-mismatch", "anthropic"); !errors.Is(errBegin, errOAuthSessionNotPending) {
+	if errBegin := claimOAuthSessionCommit("provider-mismatch", "anthropic"); !errors.Is(errBegin, errOAuthSessionNotPending) {
 		t.Fatalf("provider mismatch begin error = %v, want %v", errBegin, errOAuthSessionNotPending)
 	}
 }
@@ -321,8 +321,8 @@ func TestOAuthSessionStoreKiroPresentationStatusesRemainCancellableAndSaveable(t
 		saveStore := newOAuthSessionStore(time.Minute)
 		saveStore.Register("kiro-save", "kiro")
 		saveStore.SetError("kiro-save", status)
-		if errBegin := saveStore.BeginSave("kiro-save", "kiro"); errBegin != nil {
-			t.Fatalf("BeginSave() error = %v for Kiro status %q, want nil", errBegin, status)
+		if !saveStore.claimCommit("kiro-save", "kiro") {
+			t.Fatalf("commit claim failed for Kiro status %q", status)
 		}
 		if saveStore.Cancel("kiro-save") {
 			t.Fatalf("Cancel() = true after Kiro save began for status %q, want false", status)
@@ -344,7 +344,7 @@ func TestOAuthSessionStoreCancelAndSaveHaveOneWinner(t *testing.T) {
 		}()
 		go func() {
 			<-start
-			saveBegan <- store.BeginSave("racing-state", "xai") == nil
+			saveBegan <- store.claimCommit("racing-state", "xai")
 		}()
 		close(start)
 

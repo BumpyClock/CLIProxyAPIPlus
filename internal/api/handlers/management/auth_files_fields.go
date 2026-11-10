@@ -1146,13 +1146,6 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	return savedPath, nil
 }
 
-func (h *Handler) saveOAuthTokenRecord(ctx context.Context, state, provider string, record *coreauth.Auth) (string, error) {
-	if errBegin := beginOAuthSessionSave(state, provider); errBegin != nil {
-		return "", errBegin
-	}
-	return h.saveTokenRecord(ctx, record)
-}
-
 func metadataStringValue(metadata map[string]any, key string) string {
 	value, _ := metadata[key].(string)
 	return strings.TrimSpace(value)

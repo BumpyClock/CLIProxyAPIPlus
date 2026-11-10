@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -101,19 +100,13 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 			Label:    displayLabel,
 			Metadata: metadata,
 		}
-		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "cursor", record)
-		if errors.Is(errSave, errOAuthSessionNotPending) {
-			return
-		}
-		if errSave != nil {
-			log.Errorf("Failed to save Cursor tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save tokens")
+		savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "cursor", "", record, "Failed to save authentication tokens", false)
+		if !saved {
 			return
 		}
 
 		log.Infof("Cursor authentication successful! Token saved to %s", savedPath)
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("cursor")
+
 	}()
 
 	c.JSON(200, gin.H{
@@ -196,20 +189,14 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 			Metadata: metadata,
 		}
 
-		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "github-copilot", record)
-		if errors.Is(errSave, errOAuthSessionNotPending) {
-			return
-		}
-		if errSave != nil {
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
+		savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "github-copilot", "", record, "Failed to save authentication tokens", false)
+		if !saved {
 			return
 		}
 
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use GitHub Copilot services through this CLI")
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("github-copilot")
+
 	}()
 
 	c.JSON(200, gin.H{
@@ -460,19 +447,13 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 			Label:    identifier,
 			Metadata: metadata,
 		}
-		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "gitlab", record)
-		if errors.Is(errSave, errOAuthSessionNotPending) {
-			return
-		}
-		if errSave != nil {
-			log.Errorf("Failed to save GitLab auth record: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
+		savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "gitlab", "", record, "Failed to save authentication tokens", false)
+		if !saved {
 			return
 		}
 
 		fmt.Printf("GitLab Duo authentication successful. Token saved to %s\n", savedPath)
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("gitlab")
+
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -674,13 +655,8 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 			Attributes: map[string]string{"api_key": tokenStorage.APIKey},
 		}
 
-		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "iflow", record)
-		if errors.Is(errSave, errOAuthSessionNotPending) {
-			return
-		}
-		if errSave != nil {
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
+		savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "iflow", "", record, "Failed to save authentication tokens", false)
+		if !saved {
 			return
 		}
 
@@ -689,8 +665,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 			fmt.Println("API key obtained and saved")
 		}
 		fmt.Println("You can now use iFlow services through this CLI")
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("iflow")
+
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -760,19 +735,13 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 			},
 		}
 
-		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "kilo", record)
-		if errors.Is(errSave, errOAuthSessionNotPending) {
-			return
-		}
-		if errSave != nil {
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
+		savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "kilo", "", record, "Failed to save authentication tokens", false)
+		if !saved {
 			return
 		}
 
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("kilo")
+
 	}()
 
 	c.JSON(200, gin.H{
@@ -890,13 +859,8 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 						},
 					}
 
-					savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "kiro", record)
-					if errors.Is(errSave, errOAuthSessionNotPending) {
-						return
-					}
-					if errSave != nil {
-						log.Errorf("Failed to save authentication tokens: %v", errSave)
-						SetOAuthSessionError(state, "Failed to save authentication tokens")
+					savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "kiro", "", record, "Failed to save authentication tokens", false)
+					if !saved {
 						return
 					}
 
@@ -904,7 +868,7 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 					if email != "" {
 						fmt.Printf("Authenticated as: %s\n", email)
 					}
-					CompleteOAuthSession(state)
+
 					return
 				}
 			}
@@ -1047,13 +1011,8 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 						},
 					}
 
-					savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "kiro", record)
-					if errors.Is(errSave, errOAuthSessionNotPending) {
-						return
-					}
-					if errSave != nil {
-						log.Errorf("Failed to save authentication tokens: %v", errSave)
-						SetOAuthSessionError(state, "Failed to save authentication tokens")
+					savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "kiro", "", record, "Failed to save authentication tokens", false)
+					if !saved {
 						return
 					}
 
@@ -1061,7 +1020,7 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 					if email != "" {
 						fmt.Printf("Authenticated as: %s\n", email)
 					}
-					CompleteOAuthSession(state)
+
 					return
 				}
 				time.Sleep(500 * time.Millisecond)
@@ -1155,20 +1114,14 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 			Storage:  storage,
 			Metadata: metadata,
 		}
-		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "qoder", record)
-		if errors.Is(errSave, errOAuthSessionNotPending) {
-			return
-		}
-		if errSave != nil {
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
+		savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "qoder", "", record, "Failed to save authentication tokens", false)
+		if !saved {
 			return
 		}
 
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use Qoder services through this CLI")
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("qoder")
+
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": deviceFlow.VerificationURIComplete, "state": state})

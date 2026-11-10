@@ -169,7 +169,8 @@ retain the corresponding business operation's fields.
 
 ## OAuth
 
-The login URL is shared by all providers. Set the required `provider` query
+The v8 login URL is shared by the core and registered plugin providers. Plus
+built-in login flows retain their v0 URLs. Set the required `provider` query
 parameter to `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `devin`,
 `meta`, or a registered plugin provider ID. For example:
 
@@ -298,6 +299,9 @@ operations in this release.
 
 The `/v0/management` endpoints keep their original paths and payloads, including
 provider-specific OAuth login URLs, callbacks, status queries, and cancellation.
+Credential persistence uses the shared session commit path. Save failures become
+terminal polling errors; completing one login does not complete another pending
+login for the same provider.
 For example, `GET /v0/management/codex-auth-url` and
 `GET /v8/management/oauth/auth-url?provider=codex` start the same login flow.
 

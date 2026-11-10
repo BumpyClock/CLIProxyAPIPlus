@@ -31,7 +31,6 @@ var (
 	errInvalidOAuthState      = errors.New("invalid oauth state")
 	errUnsupportedOAuthFlow   = errors.New("unsupported oauth provider")
 	errOAuthSessionNotPending = errors.New("oauth session is not pending")
-	errOAuthSessionSaving     = errors.New("oauth session credential save is already in progress")
 	errOAuthSessionExists     = errors.New("oauth session already exists")
 )
 
@@ -427,55 +426,6 @@ func isOAuthSessionPendingStatus(session oauthSession) bool {
 	return strings.HasPrefix(session.Status, "device_code|") || strings.HasPrefix(session.Status, "auth_url|")
 }
 
-// BeginSave atomically claims a pending OAuth session for credential
-// persistence. Once claimed, cancellation must report false because saving has
-// already won the race.
-func (s *oauthSessionStore) BeginSave(state, provider string) error {
-	state = strings.TrimSpace(state)
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if state == "" || provider == "" {
-		return errOAuthSessionNotPending
-	}
-	now := time.Now()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.purgeExpiredLocked(now)
-	session, ok := s.sessions[state]
-	if !ok || session.Completed || !isOAuthSessionPendingStatus(session) {
-		return errOAuthSessionNotPending
-	}
-	if session.Committing || session.SIWCCommitting {
-		return errOAuthSessionSaving
-	}
-	if !strings.EqualFold(session.Provider, provider) {
-		return errOAuthSessionNotPending
-	}
-	session.Committing = true
-	s.sessions[state] = session
-	return nil
-}
-
-func (s *oauthSessionStore) IsSaving(state, provider string) bool {
-	state = strings.TrimSpace(state)
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if state == "" {
-		return false
-	}
-	now := time.Now()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.purgeExpiredLocked(now)
-	session, ok := s.sessions[state]
-	if !ok || session.Completed || !session.Committing {
-		return false
-	}
-	return provider == "" || strings.EqualFold(session.Provider, provider)
-}
-
 func (s *oauthSessionStore) claimCommit(state, provider string) bool {
 	state = strings.TrimSpace(state)
 	provider = strings.ToLower(strings.TrimSpace(provider))
@@ -645,16 +595,6 @@ func guardOAuthSessionPendingForSave(state, provider string) error {
 		return nil
 	}
 	return errOAuthSessionNotPending
-}
-
-func IsOAuthSessionSaving(state, provider string) bool {
-	return oauthSessions.IsSaving(state, provider)
-}
-
-// beginOAuthSessionSave atomically prevents cancellation from claiming success
-// once credential persistence has started.
-func beginOAuthSessionSave(state, provider string) error {
-	return oauthSessions.BeginSave(state, provider)
 }
 
 // claimOAuthSessionCommit atomically verifies that the session is still pending

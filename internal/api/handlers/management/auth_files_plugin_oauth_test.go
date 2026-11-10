@@ -81,7 +81,7 @@ func TestSavePluginLoginRecordsRollsBackSavedAuthsOnFailure(t *testing.T) {
 		},
 	}
 
-	if errBegin := beginOAuthSessionSave("plugin-save-state", "gemini-cli"); errBegin != nil {
+	if errBegin := claimOAuthSessionCommit("plugin-save-state", "gemini-cli"); errBegin != nil {
 		t.Fatal(errBegin)
 	}
 	errSave := h.savePluginLoginRecords(context.Background(), records)
@@ -117,7 +117,7 @@ func TestConcurrentPluginSaveReturnsWaitAndWritesOnce(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	go func() {
-		if errBegin := beginOAuthSessionSave("plugin-race-state", "gemini-cli"); errBegin != nil {
+		if errBegin := claimOAuthSessionCommit("plugin-race-state", "gemini-cli"); errBegin != nil {
 			firstDone <- errBegin
 			return
 		}
@@ -125,8 +125,8 @@ func TestConcurrentPluginSaveReturnsWaitAndWritesOnce(t *testing.T) {
 	}()
 	<-store.started
 
-	if errSecond := beginOAuthSessionSave("plugin-race-state", "gemini-cli"); !errors.Is(errSecond, errOAuthSessionSaving) {
-		t.Fatalf("second save error = %v, want %v", errSecond, errOAuthSessionSaving)
+	if errSecond := claimOAuthSessionCommit("plugin-race-state", "gemini-cli"); !errors.Is(errSecond, errOAuthSessionNotPending) {
+		t.Fatalf("second save error = %v, want %v", errSecond, errOAuthSessionNotPending)
 	}
 
 	router := gin.New()
