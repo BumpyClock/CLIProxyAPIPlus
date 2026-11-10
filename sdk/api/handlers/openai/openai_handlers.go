@@ -676,7 +676,7 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 						h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, make(chan []byte), pendingErrors, false)
 						return
 					}
-					h.WriteErrorResponse(c, errMsg)
+					h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
 					if errMsg != nil {
 						cliCancel(errMsg.Error)
 					} else {
@@ -915,7 +915,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 						h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, make(chan []byte), pendingErrors, false)
 						return
 					}
-					h.WriteErrorResponse(c, errMsg)
+					h.WriteErrorResponse(c, sanitizeOpenAIErrorMessage(errMsg))
 					if errMsg != nil {
 						cliCancel(errMsg.Error)
 					} else {
