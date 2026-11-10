@@ -6,6 +6,10 @@ credential prefixes such as `copilot/gpt-6.1-sol`.
 When Copilot's built-in definitions lack reasoning metadata, discovery fills it
 from an exact model ID in the current canonical Codex client catalog, then the
 static model catalog. Existing Copilot reasoning restrictions take precedence.
+An explicit reasoning disable also takes precedence. Static fallback requires
+the returned catalog ID to match exactly, even when the v8 registry can resolve
+a dated or bracketed Claude variant to a family entry. If the Codex catalog
+cannot be decoded, enrichment still labels models but leaves reasoning unchanged.
 Unknown models do not gain inferred reasoning levels. Account-specific token
 limits remain unchanged. This applies to both API discovery and static fallback.
 

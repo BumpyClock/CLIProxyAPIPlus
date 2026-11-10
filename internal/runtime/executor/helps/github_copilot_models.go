@@ -37,12 +37,12 @@ func EnrichGitHubCopilotModels(models []*registry.ModelInfo, catalog []byte) {
 		}
 	}
 	for _, model := range models {
-		if model.Thinking != nil {
+		if model.Thinking != nil || model.ExplicitThinking {
 			continue
 		}
 		if levels := levelsByID[model.ID]; len(levels) > 0 {
 			model.Thinking = &registry.ThinkingSupport{Levels: append([]string(nil), levels...)}
-		} else if canonical := registry.LookupStaticModelInfo(model.ID); canonical != nil {
+		} else if canonical := registry.LookupStaticModelInfo(model.ID); canonical != nil && canonical.ID == model.ID {
 			model.Thinking = canonical.Thinking
 		}
 	}
