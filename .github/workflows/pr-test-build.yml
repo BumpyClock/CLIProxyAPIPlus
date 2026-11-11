@@ -31,7 +31,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  MODELS_REPOSITORY_REF: 0173cfadb6a8b4b126db6f7ba16315683219e58b
+  MODELS_REPOSITORY_REF: 26f77650ca9f30630f244989ad47962c2ef02b33
 
 jobs:
   build:
@@ -50,5 +50,7 @@ jobs:
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Build
         run: go build ./cmd/server
+      - name: Test Go plugin examples
+        run: bash .github/scripts/verify-go-plugin-examples.sh
       - name: Test
         run: go test ./...

@@ -35,6 +35,8 @@ auths/*
 # Documentation
 docs/*
 !docs/github-copilot-models.md
+!docs/management-api-v8.md
+!docs/upstream-v8-review.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

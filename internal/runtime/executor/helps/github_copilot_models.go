@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // EnrichGitHubCopilotModels labels the route and fills missing reasoning metadata
@@ -42,7 +42,7 @@ func EnrichGitHubCopilotModels(models []*registry.ModelInfo, catalog []byte) {
 		}
 		if levels := levelsByID[model.ID]; len(levels) > 0 {
 			model.Thinking = &registry.ThinkingSupport{Levels: append([]string(nil), levels...)}
-		} else if canonical := registry.LookupStaticModelInfo(model.ID); canonical != nil {
+		} else if canonical := registry.LookupStaticModelInfo(model.ID); canonical != nil && canonical.ID == model.ID {
 			model.Thinking = canonical.Thinking
 		}
 	}
