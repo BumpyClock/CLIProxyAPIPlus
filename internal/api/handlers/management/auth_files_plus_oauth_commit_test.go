@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,8 +63,7 @@ func TestPlusOAuthCommitReportsOutcomeForOnlyItsSession(t *testing.T) {
 				t.Fatalf("invalid login response: %s, error=%v", start.Body.String(), err)
 			}
 			t.Cleanup(func() { store.Complete(login.State) })
-			callback := `{"state":"` + login.State + `","code":"synthetic-code"}`
-			if err := os.WriteFile(filepath.Join(authDir, ".oauth-gitlab-"+login.State+".oauth"), []byte(callback), 0600); err != nil {
+			if _, err := WriteOAuthCallbackFileForPendingSession(authDir, "gitlab", login.State, "synthetic-code", ""); err != nil {
 				t.Fatal(err)
 			}
 			deadline := time.NewTimer(5 * time.Second)
