@@ -65,16 +65,22 @@ surface and make future upstream reconciliation harder to verify.
 
 ## Verification
 
-The final code passed `.github/scripts/verify-upstream-sync.sh` on macOS and a
-no-secrets Boat Linux sandbox using Go 1.27.3. This includes a server build/help
-check, the nested Go plugin example gate, the full ordinary Go suite, and
-selected race tests. Linux effective
-capabilities were cleared so unreadable-file tests exercised Unix permissions.
+Full verification passed `.github/scripts/verify-upstream-sync.sh` on macOS and
+a no-secrets Boat Linux sandbox using Go 1.27.3. This includes a server build/help
+check, the nested Go plugin example gate, the full ordinary Go suite, and selected
+race tests. Linux effective capabilities were cleared so unreadable-file tests
+exercised Unix permissions.
 
 Additional Linux race checks passed for config, management session commits,
 multi-entry plugin OAuth, pluginhost, and OpenAI error boundaries. The current
 frontend's native v8 smoke passed all eight groups against the built fork using
 a disposable loopback fixture. The server was stopped afterward.
 
-An earlier integration run recorded a macOS WebRTC DataChannel failure. The final
-full macOS run passed; no root-cause fix or proof of non-flakiness is claimed.
+An earlier integration run recorded a macOS WebRTC DataChannel failure. Later
+full macOS runs passed; no root-cause fix or proof of non-flakiness is claimed.
+During babysitting, another full macOS run timed out in the unchanged
+`TestEnsureClientsWaitsForPreviousTargetClose`. Its isolated retry passed. The
+latest full Linux run passed. The test fixture for Plus OAuth was also corrected
+to use the production atomic callback publisher; it passed 25 race-enabled
+repetitions on both platforms. Pipeline failure regressions passed ordinary and
+race-enabled SDK tests.
