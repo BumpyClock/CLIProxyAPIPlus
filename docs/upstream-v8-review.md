@@ -32,6 +32,11 @@ limits, not a second model approval of the final revision.
 - **Copilot discovery checked policy state applied only later.** The unreachable
   guard and its synthetic-only test case were removed. Exact-ID matching and
   existing reasoning restrictions remain covered.
+- **Six Go plugin examples retained v7 dependency versions under v8 paths.**
+  Copilot's PR review exposed invalid manifests that the root Go suite cannot
+  reach. Their requirements now match v8. A discovery-based gate tests every Go
+  plugin module and builds its C-shared library with read-only module metadata.
+  Both PR CI and the upstream-sync verification script run this gate.
 
 The local repairs introduce no new file-size crossing above 1,000 lines.
 Upstream size crossings remain imported implementation, not locally expanded
@@ -57,7 +62,8 @@ surface and make future upstream reconciliation harder to verify.
 
 The final code passed `.github/scripts/verify-upstream-sync.sh` on macOS and a
 no-secrets Boat Linux sandbox using Go 1.27.3. This includes a server build/help
-check, the full ordinary Go suite, and selected race tests. Linux effective
+check, the nested Go plugin example gate, the full ordinary Go suite, and
+selected race tests. Linux effective
 capabilities were cleared so unreadable-file tests exercised Unix permissions.
 
 Additional Linux race checks passed for config, management session commits,

@@ -29,6 +29,18 @@ This directory contains standard dynamic library plugin examples for the CLIProx
 
 Most standard capability examples contain `go/`, `c/`, and `rust/` subdirectories. Specialized examples may provide only the implementation language they need.
 
+Go plugin examples are separate modules, so the root `go test ./...` does not
+check them. From the repository root, run:
+
+```bash
+bash .github/scripts/verify-go-plugin-examples.sh
+```
+
+This discovers every Go plugin module, runs its tests with read-only module
+metadata, and builds its C-shared library in a temporary directory. It requires
+Go and a C compiler. PR CI and the upstream-sync verification script run the
+same check.
+
 ## Codex Service Tier
 
 `codex-service-tier` declares the request normalization capability. When `fast` is `true`, it sets `service_tier` to `priority` for requests where `req.ToFormat` is `codex` and `req.Model` is `gpt-5.5`.

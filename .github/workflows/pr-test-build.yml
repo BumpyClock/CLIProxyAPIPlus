@@ -50,5 +50,7 @@ jobs:
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Build
         run: go build ./cmd/server
+      - name: Test Go plugin examples
+        run: bash .github/scripts/verify-go-plugin-examples.sh
       - name: Test
         run: go test ./...
