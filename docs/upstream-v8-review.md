@@ -37,6 +37,11 @@ limits, not a second model approval of the final revision.
   reach. Their requirements now match v8. A discovery-based gate tests every Go
   plugin module and builds its C-shared library with read-only module metadata.
   Both PR CI and the upstream-sync verification script run this gate.
+- **The SDK translation pipeline hid converter failures from its error return.**
+  Copilot raised this in a review summary without an inline thread. A registered
+  converter's failure was reproduced in the returned envelope alongside a nil
+  function error. The pipeline now forwards that error to SDK callers and
+  middleware. Regression tests also preserve successful translation behavior.
 
 The local repairs introduce no new file-size crossing above 1,000 lines.
 Upstream size crossings remain imported implementation, not locally expanded

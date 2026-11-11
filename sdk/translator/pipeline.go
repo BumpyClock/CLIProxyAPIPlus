@@ -72,7 +72,8 @@ func (p *Pipeline) UseResponse(mw ResponseMiddleware) {
 // TranslateRequest applies middleware and registry transformations.
 func (p *Pipeline) TranslateRequest(ctx context.Context, from, to Format, req RequestEnvelope) (RequestEnvelope, error) {
 	terminal := func(ctx context.Context, input RequestEnvelope) (RequestEnvelope, error) {
-		return p.registry.TranslateRequestEnvelope(ctx, from, to, input), nil
+		out := p.registry.TranslateRequestEnvelope(ctx, from, to, input)
+		return out, out.Err
 	}
 
 	handler := terminal
