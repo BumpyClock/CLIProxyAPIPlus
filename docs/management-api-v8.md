@@ -161,7 +161,7 @@ retain the corresponding business operation's fields.
 | `/oauth/status?state=<state>` | GET | Get login status. |
 | `/oauth/session?state=<state>` | DELETE | Cancel a login session. |
 | `/oauth/callback` | GET, POST | Submit an OAuth callback. |
-| `/plugins` | GET | List installed plugins. |
+| `/plugins` | GET | List installed plugins. Entries for registered plugins include their runtime `priority`. |
 | `/plugins/<id>` | DELETE | Delete a plugin. |
 | `/plugins/store` | GET | List the plugin store (supports optional `?refresh=true` to bypass cached release checks). |
 | `/plugins/store/<id>/install` | POST | Install or update a plugin. |

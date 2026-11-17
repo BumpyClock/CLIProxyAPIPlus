@@ -3,7 +3,6 @@ package management
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -252,47 +252,55 @@ func TestBuildAuthFromFileData_DoesNotNormalizeUntypedNonKiroOAuthJSON(t *testin
 }
 
 func TestWriteAuthFile_PersistsNormalizedKiroIDETokenJSON(t *testing.T) {
-	authDir := t.TempDir()
-	manager := coreauth.NewManager(nil, nil, nil)
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
-	data := []byte(`{
-		"accessToken":"access-token",
-		"refreshToken":"refresh-token",
-		"profileArn":"arn:aws:codewhisperer:us-east-1:123456789012:profile/test",
-		"expiresAt":"2026-06-19T12:00:00Z",
-		"authMethod":"Google",
-		"provider":"Google",
-		"email":"user@example.com"
-	}`)
+	for _, version := range []string{"v0", "v8"} {
+		t.Run(version, func(t *testing.T) {
+			ctx := context.Background()
+			if version == "v8" {
+				ctx = withV8AuthFileMutation(ctx)
+			}
+			authDir := t.TempDir()
+			manager := coreauth.NewManager(nil, nil, nil)
+			h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+			data := []byte(`{
+				"accessToken":"access-token",
+				"refreshToken":"refresh-token",
+				"profileArn":"arn:aws:codewhisperer:us-east-1:123456789012:profile/test",
+				"expiresAt":"2026-06-19T12:00:00Z",
+				"authMethod":"Google",
+				"provider":"Google",
+				"email":"user@example.com"
+			}`)
 
-	if err := h.writeAuthFile(context.Background(), "kiro-auth-token.json", data); err != nil {
-		t.Fatalf("writeAuthFile() error = %v", err)
-	}
+			if err := h.writeAuthFile(ctx, "kiro-auth-token.json", data); err != nil {
+				t.Fatalf("writeAuthFile() error = %v", err)
+			}
 
-	written, err := os.ReadFile(filepath.Join(authDir, "kiro-auth-token.json"))
-	if err != nil {
-		t.Fatalf("read written auth file: %v", err)
-	}
-	var metadata map[string]any
-	if err := json.Unmarshal(written, &metadata); err != nil {
-		t.Fatalf("unmarshal written auth file: %v", err)
-	}
-	if got, _ := metadata["type"].(string); got != "kiro" {
-		t.Fatalf("written metadata type = %q, want kiro", got)
-	}
-	if got, _ := metadata["access_token"].(string); got != "access-token" {
-		t.Fatalf("written access_token = %q, want access-token", got)
-	}
-	if _, exists := metadata["accessToken"]; exists {
-		t.Fatalf("written metadata still contains raw accessToken: %#v", metadata)
-	}
+			written, err := os.ReadFile(filepath.Join(authDir, "kiro-auth-token.json"))
+			if err != nil {
+				t.Fatalf("read written auth file: %v", err)
+			}
+			var metadata map[string]any
+			if err := json.Unmarshal(written, &metadata); err != nil {
+				t.Fatalf("unmarshal written auth file: %v", err)
+			}
+			if got, _ := metadata["type"].(string); got != "kiro" {
+				t.Fatalf("written metadata type = %q, want kiro", got)
+			}
+			if got, _ := metadata["access_token"].(string); got != "access-token" {
+				t.Fatalf("written access_token = %q, want access-token", got)
+			}
+			if _, exists := metadata["accessToken"]; exists {
+				t.Fatalf("written metadata still contains raw accessToken: %#v", metadata)
+			}
 
-	auth, ok := manager.GetByID("kiro-auth-token.json")
-	if !ok {
-		t.Fatal("expected auth manager to contain uploaded Kiro auth")
-	}
-	if auth.Provider != "kiro" {
-		t.Fatalf("manager auth provider = %q, want kiro", auth.Provider)
+			auth, ok := manager.GetByID("kiro-auth-token.json")
+			if !ok {
+				t.Fatal("expected auth manager to contain uploaded Kiro auth")
+			}
+			if auth.Provider != "kiro" {
+				t.Fatalf("manager auth provider = %q, want kiro", auth.Provider)
+			}
+		})
 	}
 }
 

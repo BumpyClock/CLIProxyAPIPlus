@@ -40,7 +40,7 @@ env:
   GHCR_REGISTRY: ghcr.io
   GHCR_IMAGE_NAME: ${{ github.repository_owner }}/cli-proxy-api-plus
   DOCKERHUB_IMAGE_NAME: kaitranntt/cli-proxy-api-plus
-  MODELS_REPOSITORY_REF: 26f77650ca9f30630f244989ad47962c2ef02b33
+  MODELS_REPOSITORY_REF: a65f8d3e67fb8f7885b0331cbe40669e5b9359d7
 
 permissions:
   contents: read
