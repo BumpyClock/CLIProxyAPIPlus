@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -2782,6 +2782,12 @@ func TestResponsesUpstreamErrorBodyDrivesExposure(t *testing.T) {
 			name:   "cyber policy at 502",
 			status: http.StatusBadGateway,
 			body:   `{"error":{"type":"invalid_request","code":"cyber_policy","message":"flagged"}}`,
+			want:   true,
+		},
+		{
+			name:   "bio policy at 502",
+			status: http.StatusBadGateway,
+			body:   `{"error":{"code":"bio_policy","message":"This content was flagged for possible biological risk.","param":null,"type":"invalid_request"},"sequence_number":7}`,
 			want:   true,
 		},
 		{

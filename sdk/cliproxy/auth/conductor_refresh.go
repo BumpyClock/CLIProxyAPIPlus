@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -1014,13 +1014,34 @@ func applyDevinQuotaRestoration(auth, existing *Auth, now time.Time) bool {
 		}
 		resetModelState(state, now)
 	}
-	auth.Status = StatusActive
-	auth.StatusMessage = ""
-	auth.LastError = nil
-	auth.Unavailable = false
-	auth.NextRetryAfter = time.Time{}
+	independentForce := effectiveAuthForceUntil(existing)
+	auth.credQuotaForceUntil = time.Time{}
+	auth.forceCooldownSeeded = true
+	if independentForce.After(now) {
+		auth.forceCooldownUntil = independentForce
+		auth.Unavailable = true
+		auth.NextRetryAfter = independentForce
+		auth.Status = StatusError
+		if isForceCooldownError(existing.LastError) {
+			auth.LastError = cloneError(existing.LastError)
+			auth.StatusMessage = existing.StatusMessage
+		} else {
+			auth.LastError = nil
+			auth.StatusMessage = ErrorCodeForceCooldown
+		}
+	} else {
+		auth.forceCooldownUntil = time.Time{}
+		auth.Status = StatusActive
+		auth.StatusMessage = ""
+		auth.LastError = nil
+		auth.Unavailable = false
+		auth.NextRetryAfter = time.Time{}
+	}
 	if len(auth.ModelStates) > 0 {
 		updateAggregatedAvailability(auth, now)
+		if auth.Unavailable && auth.Status == StatusActive {
+			auth.Status = StatusError
+		}
 	}
 	return true
 }
@@ -1121,6 +1142,12 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(ctx context.Context, sel
 		}
 	}
 	return current, false, nil
+}
+
+// RefreshAfterUnauthorized refreshes a local credential once after an upstream 401
+// using the same rejection-marking and single-refresh rules as request execution.
+func (m *Manager) RefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool, clientHeaders ...http.Header) (*Auth, bool) {
+	return m.tryRefreshAfterUnauthorized(ctx, auth, execErr, alreadyTried, clientHeaders...)
 }
 
 // tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a

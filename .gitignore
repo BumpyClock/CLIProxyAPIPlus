@@ -37,6 +37,8 @@ docs/*
 !docs/github-copilot-models.md
 !docs/management-api-v8.md
 !docs/upstream-v8-review.md
+!docs/websocket-tunnel.md
+!docs/websocket-tunnel_CN.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
