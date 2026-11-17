@@ -3,7 +3,15 @@
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
 ## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+- Core upstream: [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI).
+- Plus upstream: [kaitranntt/CLIProxyAPIPlus](https://github.com/kaitranntt/CLIProxyAPIPlus).
+
+## Upstream Sync
+
+- Last full core sync: [v8.0.64 (`905637daa3f2fae4dcacf50164dac15ad43ed5c2`)](https://github.com/router-for-me/CLIProxyAPI/commit/905637daa3f2fae4dcacf50164dac15ad43ed5c2). Keep this reference aligned with [`.ccs-fork-upstream.env`](.ccs-fork-upstream.env), the release automation baseline.
+- Last full Plus sync: [`0341bcc440583738d7d0e673abefc63bbe99e131`](https://github.com/kaitranntt/CLIProxyAPIPlus/commit/0341bcc440583738d7d0e673abefc63bbe99e131).
+- Latest core revision reviewed for selective backports: [v8.0.76 (`7df56074b252384d878ec4fca840552c6fb5236e`)](https://github.com/router-for-me/CLIProxyAPI/commit/7df56074b252384d878ec4fca840552c6fb5236e).
+- For selective backports, keep upstream commit IDs in the commit messages. Do not advance the full sync baseline.
 
 ## Commands
 ```bash
