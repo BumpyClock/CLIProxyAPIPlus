@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,6 +45,110 @@ const (
 	kiroCallbackPort     = 9876
 )
 
+var plusOAuthStarts = map[string]func(*Handler, *gin.Context){
+	"cursor":         (*Handler).RequestCursorToken,
+	"github-copilot": (*Handler).RequestGitHubToken,
+	"gitlab":         (*Handler).RequestGitLabToken,
+	"iflow":          (*Handler).RequestIFlowToken,
+	"kilo":           (*Handler).RequestKiloToken,
+	"kiro":           (*Handler).RequestKiroToken,
+	"qoder":          (*Handler).RequestQoderToken,
+}
+
+func (h *Handler) ListPlusOAuthProvidersV8(c *gin.Context) {
+	providers := slices.Sorted(maps.Keys(plusOAuthStarts))
+	c.JSON(http.StatusOK, gin.H{"providers": providers})
+}
+
+func (h *Handler) startPlusOAuthV8(c *gin.Context, provider string) bool {
+	start, ok := plusOAuthStarts[strings.ToLower(provider)]
+	if !ok {
+		return false
+	}
+	if _, targeted := c.Get(oauthSessionTargetContextKey); targeted || oauthSessionProxyURLFromContext(c) != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "targeted recovery and proxy_url are not supported for this provider"})
+		return true
+	}
+	start(h, c)
+	return true
+}
+
+func newPlusOAuthState(c *gin.Context) (string, bool) {
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return "", false
+	}
+	return state, true
+}
+
+func startPlusDeviceOAuth(ctx context.Context, state, provider string, poll func(context.Context)) {
+	oauthSessions.registerBuiltin(state, provider, "", oauthFlowDevice)
+	go func() {
+		pollCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go watchOAuthSessionCancel(pollCtx, cancel, state, provider)
+		poll(pollCtx)
+	}()
+}
+
+func (h *Handler) beginPlusBrowserOAuth(c *gin.Context, state, provider string, callbackPort int) (func(), bool) {
+	var forwarder *callbackForwarder
+	if isWebUIRequest(c) {
+		path := "/" + provider + "/callback"
+		if c.GetBool(ConfigV8ContextKey) {
+			path = "/v8/management/oauth/callback"
+		}
+		target, errTarget := h.managementCallbackURL(path)
+		if errTarget != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			return nil, false
+		}
+		var errListen error
+		forwarder, errListen = listenCallbackForwarder(callbackPort, provider, target)
+		if errListen != nil {
+			log.WithError(errListen).Warn("OAuth callback port unavailable")
+			c.JSON(http.StatusConflict, gin.H{"error": "callback port unavailable"})
+			return nil, false
+		}
+	}
+	oauthSessions.registerBuiltin(state, provider, "", oauthFlowBrowser)
+	return func() { stopCallbackForwarderInstance(callbackPort, forwarder) }, true
+}
+
+func kiroDevicePrompt(response *kiroauth.StartDeviceAuthResponse) oauthPrompt {
+	return oauthPrompt{
+		URL:      firstNonEmpty(response.VerificationURIComplete, response.VerificationURI),
+		UserCode: response.UserCode,
+	}
+}
+
+func waitPlusOAuthCallback(authDir, provider, state, timeoutMessage string) *oauthCallbackFilePayload {
+	path := oauthCallbackFilePath(authDir, provider, state)
+	defer func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.WithError(err).Warn("failed to remove OAuth callback")
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Minute)
+	for IsOAuthSessionPending(state, provider) {
+		if time.Now().After(deadline) {
+			SetOAuthSessionError(state, timeoutMessage)
+			return nil
+		}
+		if data, err := os.ReadFile(path); err == nil {
+			var callback oauthCallbackFilePayload
+			if err := json.Unmarshal(data, &callback); err != nil {
+				SetOAuthSessionError(state, "Invalid OAuth callback")
+				return nil
+			}
+			return &callback
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil
+}
+
 func (h *Handler) RequestCursorToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
@@ -56,21 +163,21 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 		return
 	}
 
-	state := fmt.Sprintf("cur-%d", time.Now().UnixNano())
-	RegisterOAuthSession(state, "cursor")
-
-	go func() {
+	state, ok := newPlusOAuthState(c)
+	if !ok {
+		return
+	}
+	startPlusDeviceOAuth(ctx, state, "cursor", func(pollCtx context.Context) {
 		log.Info("Waiting for Cursor authentication...")
 		log.Infof("Open this URL in your browser: %s", authParams.LoginURL)
 
-		tokens, errPoll := cursorauth.PollForAuth(ctx, authParams.UUID, authParams.Verifier)
+		tokens, errPoll := cursorauth.PollForAuth(pollCtx, authParams.UUID, authParams.Verifier)
 		if errPoll != nil {
 			SetOAuthSessionError(state, "Authentication failed: "+errPoll.Error())
 			log.Errorf("Cursor authentication failed: %v", errPoll)
 			return
 		}
 
-		// Build metadata
 		metadata := map[string]any{
 			"type":          "cursor",
 			"access_token":  tokens.AccessToken,
@@ -107,7 +214,7 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 
 		log.Infof("Cursor authentication successful! Token saved to %s", savedPath)
 
-	}()
+	})
 
 	c.JSON(200, gin.H{
 		"status": "ok",
@@ -120,12 +227,13 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 
 	fmt.Println("Initializing GitHub Copilot authentication...")
 
-	state := fmt.Sprintf("gh-%d", time.Now().UnixNano())
+	state, ok := newPlusOAuthState(c)
+	if !ok {
+		return
+	}
 
-	// Initialize Copilot auth service
 	deviceClient := copilot.NewDeviceFlowClient(h.cfg)
 
-	// Initiate device flow
 	deviceCode, err := deviceClient.RequestDeviceCode(ctx)
 	if err != nil {
 		log.Errorf("Failed to initiate device flow: %v", err)
@@ -136,19 +244,17 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 	authURL := deviceCode.VerificationURI
 	userCode := deviceCode.UserCode
 
-	RegisterOAuthSession(state, "github-copilot")
-
-	go func() {
+	startPlusDeviceOAuth(ctx, state, "github-copilot", func(pollCtx context.Context) {
 		fmt.Printf("Please visit %s and enter code: %s\n", authURL, userCode)
 
-		tokenData, errPoll := deviceClient.PollForToken(ctx, deviceCode)
+		tokenData, errPoll := deviceClient.PollForToken(pollCtx, deviceCode)
 		if errPoll != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", errPoll)
 			return
 		}
 
-		userInfo, errUser := deviceClient.FetchUserInfo(ctx, tokenData.AccessToken)
+		userInfo, errUser := deviceClient.FetchUserInfo(pollCtx, tokenData.AccessToken)
 		if errUser != nil {
 			log.Warnf("Failed to fetch user info: %v", errUser)
 		}
@@ -197,7 +303,7 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use GitHub Copilot services through this CLI")
 
-	}()
+	})
 
 	c.JSON(200, gin.H{
 		"status":           "ok",
@@ -222,9 +328,15 @@ func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
 		return
 	}
 
-	baseURL := gitlabauth.NormalizeBaseURL(strings.TrimSpace(payload.BaseURL))
-	if baseURL == "" {
-		baseURL = gitLabBaseURLFromRequest(nil)
+	baseURL := gitlabauth.NormalizeBaseURL(payload.BaseURL)
+	if c.GetBool(ConfigV8ContextKey) {
+		if strings.TrimSpace(payload.BaseURL) == "" {
+			baseURL = gitLabBaseURLFromRequest(nil)
+		}
+		if errURL := validateGitLabBaseURL(baseURL); errURL != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": errURL.Error()})
+			return
+		}
 	}
 	pat := strings.TrimSpace(payload.PersonalAccessToken)
 	if pat == "" {
@@ -235,7 +347,7 @@ func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
 		return
 	}
 
-	authClient := gitlabauth.NewAuthClient(h.cfg)
+	authClient := h.gitLabManagementClient(c)
 
 	user, err := authClient.GetCurrentUser(ctx, baseURL, pat)
 	if err != nil {
@@ -313,17 +425,9 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 
 	fmt.Println("Initializing GitLab Duo authentication...")
 
-	baseURL := gitLabBaseURLFromRequest(c)
-	clientID := strings.TrimSpace(c.Query("client_id"))
-	clientSecret := strings.TrimSpace(c.Query("client_secret"))
-	if clientID == "" {
-		clientID = strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_ID"))
-	}
-	if clientSecret == "" {
-		clientSecret = strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_SECRET"))
-	}
-	if clientID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "gitlab client_id is required"})
+	baseURL, clientID, clientSecret, errSettings := gitLabOAuthClientSettings(c)
+	if errSettings != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errSettings.Error()})
 		return
 	}
 
@@ -334,15 +438,13 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 		return
 	}
 
-	state, err := misc.GenerateRandomState()
-	if err != nil {
-		log.Errorf("Failed to generate GitLab state parameter: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+	state, ok := newPlusOAuthState(c)
+	if !ok {
 		return
 	}
 
 	redirectURI := gitlabauth.RedirectURL(gitlabauth.DefaultCallbackPort)
-	authClient := gitlabauth.NewAuthClient(h.cfg)
+	authClient := h.gitLabManagementClient(c)
 	authURL, err := authClient.GenerateAuthURL(baseURL, clientID, redirectURI, state, pkceCodes)
 	if err != nil {
 		log.Errorf("Failed to generate GitLab authorization URL: %v", err)
@@ -350,62 +452,30 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 		return
 	}
 
-	RegisterOAuthSession(state, "gitlab")
-
-	isWebUI := isWebUIRequest(c)
-	var forwarder *callbackForwarder
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/gitlab/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute gitlab callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(gitlabauth.DefaultCallbackPort, "gitlab", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start gitlab callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-			return
-		}
+	closeBrowser, ok := h.beginPlusBrowserOAuth(c, state, "gitlab", gitlabauth.DefaultCallbackPort)
+	if !ok {
+		return
 	}
 
 	go func() {
-		if isWebUI {
-			defer stopCallbackForwarderInstance(gitlabauth.DefaultCallbackPort, forwarder)
-		}
+		defer closeBrowser()
 
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-gitlab-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
-		var code string
-		for {
-			if !IsOAuthSessionPending(state, "gitlab") {
-				return
-			}
-			if time.Now().After(deadline) {
-				log.Error("gitlab oauth flow timed out")
-				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
-				return
-			}
-			if data, errRead := os.ReadFile(waitFile); errRead == nil {
-				var payload map[string]string
-				_ = json.Unmarshal(data, &payload)
-				_ = os.Remove(waitFile)
-				if errStr := strings.TrimSpace(payload["error"]); errStr != "" {
-					SetOAuthSessionError(state, errStr)
-					return
-				}
-				if payloadState := strings.TrimSpace(payload["state"]); payloadState != state {
-					SetOAuthSessionError(state, "State code error")
-					return
-				}
-				code = strings.TrimSpace(payload["code"])
-				if code == "" {
-					SetOAuthSessionError(state, "Authorization code missing")
-					return
-				}
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
+		callback := waitPlusOAuthCallback(h.cfg.AuthDir, "gitlab", state, "Timeout waiting for OAuth callback")
+		if callback == nil {
+			return
+		}
+		if errStr := strings.TrimSpace(callback.Error); errStr != "" {
+			SetOAuthSessionError(state, errStr)
+			return
+		}
+		if strings.TrimSpace(callback.State) != state {
+			SetOAuthSessionError(state, "State code error")
+			return
+		}
+		code := strings.TrimSpace(callback.Code)
+		if code == "" {
+			SetOAuthSessionError(state, "Authorization code missing")
+			return
 		}
 
 		tokenResp, errExchange := authClient.ExchangeCodeForTokens(ctx, baseURL, clientID, clientSecret, redirectURI, code, pkceCodes.CodeVerifier)
@@ -457,6 +527,62 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func gitLabOAuthClientSettings(c *gin.Context) (baseURL, clientID, clientSecret string, err error) {
+	configuredBase := gitLabBaseURLFromRequest(nil)
+	configuredID := strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_ID"))
+	baseURL = gitLabBaseURLFromRequest(c)
+	clientID = strings.TrimSpace(c.Query("client_id"))
+	clientSecret = strings.TrimSpace(c.Query("client_secret"))
+	if c.GetBool(ConfigV8ContextKey) {
+		if errURL := validateGitLabBaseURL(baseURL); errURL != nil {
+			return "", "", "", errURL
+		}
+		if _, inQuery := c.GetQuery("client_secret"); inQuery {
+			return "", "", "", fmt.Errorf("client_secret must be provided in the request body")
+		}
+		metadata := oauthSessionExtraMetadataFromContext(c)
+		if v, ok := metadata["client_secret"]; ok {
+			secret, isString := v.(string)
+			if !isString {
+				return "", "", "", fmt.Errorf("invalid client_secret")
+			}
+			clientSecret = strings.TrimSpace(secret)
+		}
+	}
+	if baseURL == configuredBase {
+		if clientID == "" {
+			clientID = configuredID
+		}
+		if clientSecret == "" && clientID == configuredID {
+			clientSecret = strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_SECRET"))
+		}
+	}
+	if clientID == "" {
+		return "", "", "", fmt.Errorf("gitlab client_id is required")
+	}
+	return baseURL, clientID, clientSecret, nil
+}
+
+func validateGitLabBaseURL(raw string) error {
+	destination, err := url.Parse(raw)
+	if err != nil || destination.Hostname() == "" || destination.User != nil || destination.RawQuery != "" || destination.Fragment != "" {
+		return fmt.Errorf("invalid gitlab base_url")
+	}
+	host := destination.Hostname()
+	loopback := strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
+	if destination.Scheme != "https" && !(destination.Scheme == "http" && loopback) {
+		return fmt.Errorf("gitlab base_url must use HTTPS outside loopback")
+	}
+	return nil
+}
+
+func (h *Handler) gitLabManagementClient(c *gin.Context) *gitlabauth.AuthClient {
+	if c.GetBool(ConfigV8ContextKey) {
+		return gitlabauth.NewAuthClientWithoutRedirects(h.cfg)
+	}
+	return gitlabauth.NewAuthClient(h.cfg)
 }
 
 func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
@@ -566,67 +692,38 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 
 	fmt.Println("Initializing iFlow authentication...")
 
-	state := fmt.Sprintf("ifl-%d", time.Now().UnixNano())
+	state, ok := newPlusOAuthState(c)
+	if !ok {
+		return
+	}
 	authSvc := iflowauth.NewIFlowAuth(h.cfg)
 	authURL, redirectURI := authSvc.AuthorizationURL(state, iflowauth.CallbackPort)
 
-	RegisterOAuthSession(state, "iflow")
-
-	isWebUI := isWebUIRequest(c)
-	var forwarder *callbackForwarder
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/iflow/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute iflow callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(iflowauth.CallbackPort, "iflow", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start iflow callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to start callback server"})
-			return
-		}
+	closeBrowser, ok := h.beginPlusBrowserOAuth(c, state, "iflow", iflowauth.CallbackPort)
+	if !ok {
+		return
 	}
 
 	go func() {
-		if isWebUI {
-			defer stopCallbackForwarderInstance(iflowauth.CallbackPort, forwarder)
-		}
+		defer closeBrowser()
 		fmt.Println("Waiting for authentication...")
 
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-iflow-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
-		var resultMap map[string]string
-		for {
-			if !IsOAuthSessionPending(state, "iflow") {
-				return
-			}
-			if time.Now().After(deadline) {
-				SetOAuthSessionError(state, "Authentication failed")
-				fmt.Println("Authentication failed: timeout waiting for callback")
-				return
-			}
-			if data, errR := os.ReadFile(waitFile); errR == nil {
-				_ = os.Remove(waitFile)
-				_ = json.Unmarshal(data, &resultMap)
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
+		callback := waitPlusOAuthCallback(h.cfg.AuthDir, "iflow", state, "Authentication failed")
+		if callback == nil {
+			return
 		}
-
-		if errStr := strings.TrimSpace(resultMap["error"]); errStr != "" {
+		if errStr := strings.TrimSpace(callback.Error); errStr != "" {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %s\n", errStr)
 			return
 		}
-		if resultState := strings.TrimSpace(resultMap["state"]); resultState != state {
+		if resultState := strings.TrimSpace(callback.State); resultState != state {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Println("Authentication failed: state mismatch")
 			return
 		}
 
-		code := strings.TrimSpace(resultMap["code"])
+		code := strings.TrimSpace(callback.Code)
 		if code == "" {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Println("Authentication failed: code missing")
@@ -676,7 +773,10 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 
 	fmt.Println("Initializing Kilo authentication...")
 
-	state := fmt.Sprintf("kil-%d", time.Now().UnixNano())
+	state, ok := newPlusOAuthState(c)
+	if !ok {
+		return
+	}
 	kilocodeAuth := kilo.NewKiloAuth()
 
 	resp, err := kilocodeAuth.InitiateDeviceFlow(ctx)
@@ -686,19 +786,17 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 		return
 	}
 
-	RegisterOAuthSession(state, "kilo")
-
-	go func() {
+	startPlusDeviceOAuth(ctx, state, "kilo", func(pollCtx context.Context) {
 		fmt.Printf("Please visit %s and enter code: %s\n", resp.VerificationURL, resp.Code)
 
-		status, err := kilocodeAuth.PollForToken(ctx, resp.Code)
+		status, err := kilocodeAuth.PollForToken(pollCtx, resp.Code)
 		if err != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", err)
 			return
 		}
 
-		profile, err := kilocodeAuth.GetProfile(ctx, status.Token)
+		profile, err := kilocodeAuth.GetProfile(pollCtx, status.Token)
 		if err != nil {
 			log.Warnf("Failed to fetch profile: %v", err)
 			profile = &kilo.Profile{Email: status.UserEmail}
@@ -742,7 +840,7 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 
-	}()
+	})
 
 	c.JSON(200, gin.H{
 		"status":           "ok",
@@ -753,14 +851,9 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 	})
 }
 
-// RequestCursorToken initiates the Cursor PKCE authentication flow.
-// Supports multiple accounts via ?label=xxx query parameter.
-// The user opens the returned URL in a browser, logs in, and the server polls
-// until the authentication completes.
 func (h *Handler) RequestKiroToken(c *gin.Context) {
 	ctx := context.Background()
 
-	// Get the login method from query parameter (default: aws for device code flow)
 	method := strings.ToLower(strings.TrimSpace(c.Query("method")))
 	if method == "" {
 		method = "aws"
@@ -768,39 +861,34 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 
 	fmt.Println("Initializing Kiro authentication...")
 
-	state := fmt.Sprintf("kiro-%d", time.Now().UnixNano())
+	state, ok := newPlusOAuthState(c)
+	if !ok {
+		return
+	}
 
 	switch method {
 	case "aws", "builder-id":
-		RegisterOAuthSession(state, "kiro")
-
-		// AWS Builder ID uses device code flow (no callback needed)
-		go func() {
+		startPlusDeviceOAuth(ctx, state, "kiro", func(pollCtx context.Context) {
 			ssoClient := kiroauth.NewSSOOIDCClient(h.cfg)
 
-			// Step 1: Register client
 			fmt.Println("Registering client...")
-			regResp, errRegister := ssoClient.RegisterClient(ctx)
+			regResp, errRegister := ssoClient.RegisterClient(pollCtx)
 			if errRegister != nil {
 				log.Errorf("Failed to register client: %v", errRegister)
 				SetOAuthSessionError(state, "Failed to register client")
 				return
 			}
 
-			// Step 2: Start device authorization
 			fmt.Println("Starting device authorization...")
-			authResp, errAuth := ssoClient.StartDeviceAuthorization(ctx, regResp.ClientID, regResp.ClientSecret)
+			authResp, errAuth := ssoClient.StartDeviceAuthorization(pollCtx, regResp.ClientID, regResp.ClientSecret)
 			if errAuth != nil {
 				log.Errorf("Failed to start device auth: %v", errAuth)
 				SetOAuthSessionError(state, "Failed to start device authorization")
 				return
 			}
 
-			// Store the verification URL for the frontend to display.
-			// Using "|" as separator because URLs contain ":".
-			SetOAuthSessionError(state, "device_code|"+authResp.VerificationURIComplete+"|"+authResp.UserCode)
+			oauthSessions.setPrompt(state, kiroDevicePrompt(authResp))
 
-			// Step 3: Poll for token
 			fmt.Println("Waiting for authorization...")
 			interval := 5 * time.Second
 			if authResp.Interval > 0 {
@@ -810,11 +898,11 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 
 			for time.Now().Before(deadline) {
 				select {
-				case <-ctx.Done():
+				case <-pollCtx.Done():
 					SetOAuthSessionError(state, "Authorization cancelled")
 					return
 				case <-time.After(interval):
-					tokenResp, errToken := ssoClient.CreateToken(ctx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode)
+					tokenResp, errToken := ssoClient.CreateToken(pollCtx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode)
 					if errToken != nil {
 						errStr := errToken.Error()
 						if strings.Contains(errStr, "authorization_pending") {
@@ -874,45 +962,27 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 			}
 
 			SetOAuthSessionError(state, "Authorization timed out")
-		}()
+		})
 
-		// Return immediately with the state for polling
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "method": "device_code"})
 
 	case "google", "github":
-		RegisterOAuthSession(state, "kiro")
-
 		// Social auth uses protocol handler - for WEB UI we use a callback forwarder
 		provider := "Google"
 		if method == "github" {
 			provider = "Github"
 		}
 
-		isWebUI := isWebUIRequest(c)
-		var forwarder *callbackForwarder
-		if isWebUI {
-			targetURL, errTarget := h.managementCallbackURL("/kiro/callback")
-			if errTarget != nil {
-				log.WithError(errTarget).Error("failed to compute kiro callback target")
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-				return
-			}
-			var errStart error
-			if forwarder, errStart = startCallbackForwarder(kiroCallbackPort, "kiro", targetURL); errStart != nil {
-				log.WithError(errStart).Error("failed to start kiro callback forwarder")
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-				return
-			}
+		closeBrowser, ok := h.beginPlusBrowserOAuth(c, state, "kiro", kiroCallbackPort)
+		if !ok {
+			return
 		}
 
 		go func() {
-			if isWebUI {
-				defer stopCallbackForwarderInstance(kiroCallbackPort, forwarder)
-			}
+			defer closeBrowser()
 
 			socialClient := kiroauth.NewSocialAuthClient(h.cfg)
 
-			// Generate PKCE codes
 			codeVerifier, codeChallenge, errPKCE := generateKiroPKCE()
 			if errPKCE != nil {
 				log.Errorf("Failed to generate PKCE: %v", errPKCE)
@@ -920,7 +990,6 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 				return
 			}
 
-			// Build login URL
 			authURL := fmt.Sprintf("%s/login?idp=%s&redirect_uri=%s&code_challenge=%s&code_challenge_method=S256&state=%s&prompt=select_account",
 				"https://prod.us-east-1.auth.desktop.kiro.dev",
 				provider,
@@ -929,101 +998,82 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 				state,
 			)
 
-			// Store auth URL for frontend.
-			// Using "|" as separator because URLs contain ":".
-			SetOAuthSessionError(state, "auth_url|"+authURL)
+			oauthSessions.setPrompt(state, oauthPrompt{URL: authURL})
 
-			// Wait for callback file
-			waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-kiro-%s.oauth", state))
-			deadline := time.Now().Add(5 * time.Minute)
+			callback := waitPlusOAuthCallback(h.cfg.AuthDir, "kiro", state, "OAuth flow timed out")
+			if callback == nil {
+				return
+			}
+			if errStr := callback.Error; errStr != "" {
+				log.Errorf("Authentication failed: %s", errStr)
+				SetOAuthSessionError(state, "Authentication failed")
+				return
+			}
+			if callback.State != state {
+				log.Errorf("State mismatch")
+				SetOAuthSessionError(state, "State mismatch")
+				return
+			}
+			code := callback.Code
+			if code == "" {
+				log.Error("No authorization code received")
+				SetOAuthSessionError(state, "No authorization code received")
+				return
+			}
 
-			for {
-				if time.Now().After(deadline) {
-					log.Error("oauth flow timed out")
-					SetOAuthSessionError(state, "OAuth flow timed out")
-					return
-				}
-				if data, errRead := os.ReadFile(waitFile); errRead == nil {
-					var m map[string]string
-					_ = json.Unmarshal(data, &m)
-					_ = os.Remove(waitFile)
-					if errStr := m["error"]; errStr != "" {
-						log.Errorf("Authentication failed: %s", errStr)
-						SetOAuthSessionError(state, "Authentication failed")
-						return
-					}
-					if m["state"] != state {
-						log.Errorf("State mismatch")
-						SetOAuthSessionError(state, "State mismatch")
-						return
-					}
-					code := m["code"]
-					if code == "" {
-						log.Error("No authorization code received")
-						SetOAuthSessionError(state, "No authorization code received")
-						return
-					}
+			tokenReq := &kiroauth.CreateTokenRequest{
+				Code:         code,
+				CodeVerifier: codeVerifier,
+				RedirectURI:  kiroauth.KiroRedirectURI,
+			}
 
-					// Exchange code for tokens
-					tokenReq := &kiroauth.CreateTokenRequest{
-						Code:         code,
-						CodeVerifier: codeVerifier,
-						RedirectURI:  kiroauth.KiroRedirectURI,
-					}
+			tokenResp, errToken := socialClient.CreateToken(ctx, tokenReq)
+			if errToken != nil {
+				log.Errorf("Failed to exchange code for tokens: %v", errToken)
+				SetOAuthSessionError(state, "Failed to exchange code for tokens")
+				return
+			}
 
-					tokenResp, errToken := socialClient.CreateToken(ctx, tokenReq)
-					if errToken != nil {
-						log.Errorf("Failed to exchange code for tokens: %v", errToken)
-						SetOAuthSessionError(state, "Failed to exchange code for tokens")
-						return
-					}
+			expiresIn := tokenResp.ExpiresIn
+			if expiresIn <= 0 {
+				expiresIn = 3600
+			}
+			expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
+			email := kiroauth.ExtractEmailFromJWT(tokenResp.AccessToken)
 
-					// Save the token
-					expiresIn := tokenResp.ExpiresIn
-					if expiresIn <= 0 {
-						expiresIn = 3600
-					}
-					expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-					email := kiroauth.ExtractEmailFromJWT(tokenResp.AccessToken)
+			idPart := kiroauth.SanitizeEmailForFilename(email)
+			if idPart == "" {
+				idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+			}
 
-					idPart := kiroauth.SanitizeEmailForFilename(email)
-					if idPart == "" {
-						idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
-					}
+			now := time.Now()
+			fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(provider), idPart)
 
-					now := time.Now()
-					fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(provider), idPart)
+			record := &coreauth.Auth{
+				ID:       fileName,
+				Provider: "kiro",
+				FileName: fileName,
+				Metadata: map[string]any{
+					"type":          "kiro",
+					"access_token":  tokenResp.AccessToken,
+					"refresh_token": tokenResp.RefreshToken,
+					"profile_arn":   tokenResp.ProfileArn,
+					"expires_at":    expiresAt.Format(time.RFC3339),
+					"auth_method":   "social",
+					"provider":      provider,
+					"email":         email,
+					"last_refresh":  now.Format(time.RFC3339),
+				},
+			}
 
-					record := &coreauth.Auth{
-						ID:       fileName,
-						Provider: "kiro",
-						FileName: fileName,
-						Metadata: map[string]any{
-							"type":          "kiro",
-							"access_token":  tokenResp.AccessToken,
-							"refresh_token": tokenResp.RefreshToken,
-							"profile_arn":   tokenResp.ProfileArn,
-							"expires_at":    expiresAt.Format(time.RFC3339),
-							"auth_method":   "social",
-							"provider":      provider,
-							"email":         email,
-							"last_refresh":  now.Format(time.RFC3339),
-						},
-					}
+			savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "kiro", "", record, "Failed to save authentication tokens", false)
+			if !saved {
+				return
+			}
 
-					savedPath, saved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "kiro", "", record, "Failed to save authentication tokens", false)
-					if !saved {
-						return
-					}
-
-					fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-					if email != "" {
-						fmt.Printf("Authenticated as: %s\n", email)
-					}
-
-					return
-				}
-				time.Sleep(500 * time.Millisecond)
+			fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+			if email != "" {
+				fmt.Printf("Authenticated as: %s\n", email)
 			}
 		}()
 
@@ -1034,14 +1084,16 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 	}
 }
 
-// generateKiroPKCE generates PKCE code verifier and challenge for Kiro OAuth.
 func (h *Handler) RequestQoderToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
 	fmt.Println("Initializing Qoder authentication...")
 
-	state := fmt.Sprintf("qod-%d", time.Now().UnixNano())
+	state, ok := newPlusOAuthState(c)
+	if !ok {
+		return
+	}
 	qoderAuth := qoderauth.NewQoderAuth(h.cfg)
 
 	deviceFlow, err := qoderAuth.InitiateDeviceFlow(ctx)
@@ -1051,11 +1103,9 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 		return
 	}
 
-	RegisterOAuthSession(state, "qoder")
-
-	go func() {
+	startPlusDeviceOAuth(ctx, state, "qoder", func(pollCtx context.Context) {
 		fmt.Println("Waiting for authentication...")
-		tokenData, errPollForToken := qoderAuth.PollForToken(ctx, deviceFlow)
+		tokenData, errPollForToken := qoderAuth.PollForToken(pollCtx, deviceFlow)
 		if errPollForToken != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", errPollForToken)
@@ -1067,7 +1117,7 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 		// current Qoder CN gateway requires organization_id in COSY headers.
 		name, email := "", ""
 		if qoderAuth.IsEnterpriseVPC() {
-			if details, errDetails := qoderAuth.FetchUserInfoDetails(ctx, tokenData.AccessToken); errDetails == nil {
+			if details, errDetails := qoderAuth.FetchUserInfoDetails(pollCtx, tokenData.AccessToken); errDetails == nil {
 				if storage.UserID == "" {
 					storage.UserID = details.UserID
 				}
@@ -1122,7 +1172,7 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use Qoder services through this CLI")
 
-	}()
+	})
 
 	c.JSON(200, gin.H{"status": "ok", "url": deviceFlow.VerificationURIComplete, "state": state})
 }

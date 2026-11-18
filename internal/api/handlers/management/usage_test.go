@@ -105,6 +105,27 @@ func TestGetUsageStatisticsReturnsSnapshot(t *testing.T) {
 	}
 }
 
+func TestV8UsageImportRejectsMalformedSnapshotsWithoutChangingStatistics(t *testing.T) {
+	stats := usage.NewRequestStatistics()
+	stats.RestoreSnapshot(usage.StatisticsSnapshot{TotalRequests: 5, TotalTokens: 25})
+	h := &Handler{usageStats: stats}
+	for _, body := range []string{
+		`{}`, `{"usage":null}`, `{"usage":{}}`, `{"usage":{"total_requests":0}}`,
+		`{"usage":{"total_requests":-1,"total_tokens":-1}}`,
+		`{"usage":{"total_requests":0,"total_tokens":0,"failure_count":-1}}`,
+		`{"usage":{"total_requests":0,"total_tokens":0,"apis":{"fixture":{"models":{"m":{"details":[{"tokens":{"input_tokens":-1}}]}}}}}}`,
+	} {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Set(ConfigV8ContextKey, true)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v8/management/observability/usage/import", strings.NewReader(body))
+		h.ImportUsageStatistics(ctx)
+		if snapshot := stats.Snapshot(); rec.Code != http.StatusBadRequest || snapshot.TotalRequests != 5 || snapshot.TotalTokens != 25 {
+			t.Fatalf("invalid backup status=%d requests=%d tokens=%d", rec.Code, snapshot.TotalRequests, snapshot.TotalTokens)
+		}
+	}
+}
+
 func TestExportUsageStatisticsReturnsVersionedSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

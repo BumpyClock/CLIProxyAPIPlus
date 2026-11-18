@@ -1341,7 +1341,24 @@ func (h *Handler) GetCopilotQuota(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no github copilot credential found"})
 		return
 	}
+	h.writeCopilotQuota(c, auth, true)
+}
 
+func (h *Handler) GetCopilotQuotaV8(c *gin.Context) {
+	authIndex := strings.TrimSpace(c.Query("auth_index"))
+	if authIndex == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index is required"})
+		return
+	}
+	auth := h.authByIndex(authIndex)
+	if !isCopilotCredential(auth) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no github copilot credential found"})
+		return
+	}
+	h.writeCopilotQuota(c, auth, false)
+}
+
+func (h *Handler) writeCopilotQuota(c *gin.Context, auth *coreauth.Auth, includeUpstreamErrorBody bool) {
 	token, tokenErr := h.resolveTokenForAuth(c.Request.Context(), auth, "")
 	if tokenErr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to refresh copilot token"})
@@ -1387,11 +1404,14 @@ func (h *Handler) GetCopilotQuota(c *gin.Context) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		c.JSON(http.StatusBadGateway, gin.H{
+		failure := gin.H{
 			"error":       "github api request failed",
 			"status_code": resp.StatusCode,
-			"body":        string(respBody),
-		})
+		}
+		if includeUpstreamErrorBody {
+			failure["body"] = string(respBody)
+		}
+		c.JSON(http.StatusBadGateway, failure)
 		return
 	}
 
@@ -1404,7 +1424,6 @@ func (h *Handler) GetCopilotQuota(c *gin.Context) {
 	c.JSON(http.StatusOK, usage)
 }
 
-// findCopilotAuth locates a GitHub Copilot credential by auth_index or returns the first available one
 func (h *Handler) findCopilotAuth(authIndex string) *coreauth.Auth {
 	if h == nil || h.authManager == nil {
 		return nil
@@ -1414,12 +1433,7 @@ func (h *Handler) findCopilotAuth(authIndex string) *coreauth.Auth {
 	var firstCopilot *coreauth.Auth
 
 	for _, auth := range auths {
-		if auth == nil {
-			continue
-		}
-
-		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-		if provider != "copilot" && provider != "github" && provider != "github-copilot" {
+		if !isCopilotCredential(auth) {
 			continue
 		}
 
@@ -1436,6 +1450,18 @@ func (h *Handler) findCopilotAuth(authIndex string) *coreauth.Auth {
 	}
 
 	return firstCopilot
+}
+
+func isCopilotCredential(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "copilot", "github", "github-copilot":
+		return true
+	default:
+		return false
+	}
 }
 
 // enrichCopilotTokenResponse fetches quota information and adds it to the Copilot token response body

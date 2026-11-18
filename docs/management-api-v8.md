@@ -146,7 +146,10 @@ retain the corresponding business operation's fields.
 | `/observability/logs/errors/<name>` | GET | Download an error-log file. |
 | `/observability/logs/requests/<id>` | GET | Get a request log. |
 | `/observability/usage/api-keys` | GET | Get API-key usage. |
-| `/observability/usage/queue` | GET | Get queued usage events. |
+| `/observability/usage/queue` | GET | Pop queued usage events. Do not poll from a dashboard. |
+| `/observability/usage/snapshot` | GET | Read request and token statistics without consuming events. |
+| `/observability/usage/export` | GET | Export a usage backup, compatible with v0 backups. |
+| `/observability/usage/import` | POST | Replace current in-memory statistics with a usage backup. |
 | `/credentials` | GET, POST, DELETE | List, upload, or delete credential files. |
 | `/credentials/models` | GET | Get credential models. |
 | `/credentials/download` | GET | Download a credential file. |
@@ -154,7 +157,11 @@ retain the corresponding business operation's fields.
 | `/credentials/fields` | PATCH | Change credential fields. |
 | `/credentials/refresh` | POST | Refresh credentials. |
 | `/credentials/verify` | POST | Run an operator-triggered, account-pinned inference verification using an isolated session and minimal 1-token prompt. |
+| `/credentials/quota/copilot?auth_index=<index>` | GET | Read the selected GitHub Copilot credential's provider quota. An unknown index returns 404 instead of selecting another credential. |
 | `/oauth/import?provider=vertex` | POST | Import a Vertex service account using a multipart `file` upload. |
+| `/oauth/import?provider=gitlab` | POST | Import a GitLab personal access token as JSON `personal_access_token` with optional `base_url`. |
+| `/oauth/import?provider=iflow` | POST | Import an iFlow credential from a JSON `cookie`. |
+| `/oauth/providers` | GET | List the extra built-in OAuth login methods available in Plus. |
 | `/oauth/auth-url?provider=<provider>` | GET, POST | Start built-in or plugin OAuth (supports `name`/`auth_index` for targeted credential recovery and optional `verify` opt-in). |
 | `/oauth/siwc/bind` | POST | Start SIWC binding to an existing file-backed Codex OAuth credential. |
 | `/oauth/siwc/status` | GET | Read local SIWC credential status (`off`, `valid`, or `invalid`). |
@@ -169,10 +176,11 @@ retain the corresponding business operation's fields.
 
 ## OAuth
 
-The v8 login URL is shared by the core and registered plugin providers. Plus
-built-in login flows retain their v0 URLs. Set the required `provider` query
-parameter to `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `devin`,
-`meta`, or a registered plugin provider ID. For example:
+The v8 login URL is shared by core, Plus, and registered plugin providers. The
+core IDs are `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `devin`,
+and `meta`. Plus additionally serves `cursor`, `github-copilot`, `gitlab`,
+`iflow`, `kilo`, `kiro`, and `qoder`. Registered plugins retain precedence over
+Plus built-ins with the same identifier. For example:
 
 ```http
 GET /v8/management/oauth/auth-url?provider=codex
@@ -189,6 +197,17 @@ consumption; operators may explicitly opt in by passing `verify: true` (and opti
 after adoption via `POST /v8/management/credentials/verify` (`{"name":"<file>","model":"<optional-model>"}`).
 The login response includes the authorization URL and a session `state` (plus `target_auth_id`
 when targeted). Use that state for status queries and cancellation.
+
+Plus built-ins support new credential enrollment, not targeted recovery or per-session
+`proxy_url` overrides. Kiro supports `method=aws` (default), `google`, and `github`.
+Kiro returns the authorization URL and optional `user_code` on the `wait` status
+response when they become available. GitLab browser authorization uses the server's
+`GITLAB_OAUTH_CLIENT_ID`, optional `GITLAB_OAUTH_CLIENT_SECRET`, and `GITLAB_BASE_URL`
+unless the caller supplies provider-specific settings. An alternate `base_url` or
+`client_id` does not inherit the server's client secret. Pass an explicit
+`client_secret` in the POST body, never the query string.
+GitLab login and credential import require HTTPS for non-loopback servers and
+do not follow HTTP redirects with credentials.
 
 Callbacks accept `provider`, `state`, `code`, and `error` as GET query parameters
 or POST JSON fields. POST also accepts `redirect_url` containing the complete

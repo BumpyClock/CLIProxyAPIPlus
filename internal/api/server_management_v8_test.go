@@ -48,9 +48,9 @@ func TestManagementV8RoutesShareAccessControl(t *testing.T) {
 			s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
 			s.managementRoutesEnabled.Store(tc.enabled)
 			s.registerManagementRoutes()
-			for _, route := range []string{"/v0/management/config", "/v8/management/config", "/v0/management/plugins", "/v8/management/plugins"} {
+			for i, route := range []string{"/v0/management/config", "/v8/management/config", "/v0/management/plugins", "/v8/management/plugins", "/v8/management/observability/usage/snapshot", "/v8/management/oauth/providers"} {
 				req := httptest.NewRequest(http.MethodGet, route, nil)
-				req.RemoteAddr = "127.0.0.1:1234"
+				req.RemoteAddr = []string{"127.0.0.1:1234", "[::1]:1234"}[i%2]
 				if tc.authorized {
 					req.Header.Set("Authorization", "Bearer test-password")
 				}
@@ -96,6 +96,8 @@ func TestManagementV8IndependentContract(t *testing.T) {
 		"GET /v0/management/kilo-auth-url", "GET /v0/management/kiro-auth-url",
 		"GET /v0/management/copilot-quota", "GET /v0/management/ampcode",
 		"GET /v8/management/observability/logs", "GET /v8/management/observability/usage/queue",
+		"GET /v8/management/observability/usage/snapshot", "GET /v8/management/observability/usage/export", "POST /v8/management/observability/usage/import",
+		"GET /v8/management/credentials/quota/copilot", "GET /v8/management/oauth/providers",
 		"GET /v8/management/credentials", "POST /v8/management/credentials", "POST /v8/management/credentials/verify",
 		"GET /v8/management/oauth/auth-url", "POST /v8/management/oauth/auth-url", "POST /v8/management/oauth/import", "POST /v8/management/oauth/callback",
 		"POST /v8/management/routing/cooldown/reset",
@@ -134,6 +136,15 @@ func TestManagementV8IndependentContract(t *testing.T) {
 		request(route.method, route.path, "", http.StatusNotFound)
 	}
 	request(http.MethodPost, "/v8/management/oauth/providers/vertex/import", "", http.StatusNotFound)
+	providers := request(http.MethodGet, "/v8/management/oauth/providers", "", http.StatusOK)
+	if want := `{"providers":["cursor","github-copilot","gitlab","iflow","kilo","kiro","qoder"]}`; providers != want {
+		t.Fatalf("Plus OAuth discovery: got %s, want %s", providers, want)
+	}
+	request(http.MethodGet, "/v8/management/credentials/quota/copilot", "", http.StatusBadRequest)
+	request(http.MethodGet, "/v8/management/credentials/quota/copilot?auth_index=unknown", "", http.StatusNotFound)
+	request(http.MethodGet, "/v8/management/observability/usage/snapshot", "", http.StatusOK)
+	backup := request(http.MethodGet, "/v8/management/observability/usage/export", "", http.StatusOK)
+	request(http.MethodPost, "/v8/management/observability/usage/import", backup, http.StatusOK)
 	for _, tc := range []struct {
 		method, url, body string
 		status            int
