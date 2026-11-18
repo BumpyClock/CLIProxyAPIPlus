@@ -49,10 +49,26 @@ type oauthRecoveryTarget struct {
 	VerifyModel      string
 }
 
+type oauthFlow uint8
+
+const (
+	oauthFlowUnspecified oauthFlow = iota
+	oauthFlowBrowser
+	oauthFlowDevice
+)
+
+type oauthPrompt struct {
+	URL      string
+	UserCode string
+}
+
 type oauthSession struct {
 	Provider        string
 	Status          string
 	Source          string
+	Flow            oauthFlow
+	Prompt          oauthPrompt
+	CallbackWritten bool
 	ProxyURL        string
 	Metadata        map[string]any
 	SIWC            *siwcBindSession
@@ -109,10 +125,10 @@ func (s *oauthSessionStore) purgeExpiredLocked(now time.Time) {
 }
 
 func (s *oauthSessionStore) Register(state, provider string) {
-	s.RegisterWithProxy(state, provider, "")
+	s.registerBuiltin(state, provider, "", oauthFlowUnspecified)
 }
 
-func (s *oauthSessionStore) RegisterWithProxy(state, provider, proxyURL string) {
+func (s *oauthSessionStore) registerBuiltin(state, provider, proxyURL string, flow oauthFlow) {
 	state = strings.TrimSpace(state)
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	proxyURL = strings.TrimSpace(proxyURL)
@@ -129,10 +145,22 @@ func (s *oauthSessionStore) RegisterWithProxy(state, provider, proxyURL string) 
 		Provider:  provider,
 		Status:    "",
 		Source:    oauthSessionSourceBuiltin,
+		Flow:      flow,
 		ProxyURL:  proxyURL,
 		CreatedAt: now,
 		ExpiresAt: now.Add(s.ttl),
 	}
+}
+
+func (s *oauthSessionStore) setPrompt(state string, prompt oauthPrompt) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[state]
+	if !ok || !session.pending() || time.Now().After(session.ExpiresAt) {
+		return
+	}
+	session.Prompt = prompt
+	s.sessions[state] = session
 }
 
 func (s *oauthSessionStore) RegisterPlugin(state, provider string, metadata map[string]any) error {
@@ -283,6 +311,7 @@ func (s *oauthSessionStore) CompleteWithOutcome(state, authID, savedGrantHash st
 		return
 	}
 	session.Status = ""
+	session.Prompt = oauthPrompt{}
 	session.ProxyURL = ""
 	session.Metadata = nil
 	session.AuthID = authID
@@ -404,10 +433,7 @@ func (s *oauthSessionStore) IsPending(state, provider string) bool {
 	if !ok {
 		return false
 	}
-	if session.Completed || session.Committing || session.SIWCCommitting {
-		return false
-	}
-	if !isOAuthSessionPendingStatus(session) {
+	if !session.pending() {
 		return false
 	}
 	if provider == "" {
@@ -416,14 +442,8 @@ func (s *oauthSessionStore) IsPending(state, provider string) bool {
 	return strings.EqualFold(session.Provider, provider)
 }
 
-func isOAuthSessionPendingStatus(session oauthSession) bool {
-	if session.Status == "" {
-		return true
-	}
-	if !strings.EqualFold(session.Provider, "kiro") {
-		return false
-	}
-	return strings.HasPrefix(session.Status, "device_code|") || strings.HasPrefix(session.Status, "auth_url|")
+func (session oauthSession) pending() bool {
+	return session.Status == "" && !session.Completed && !session.Committing && !session.SIWCCommitting
 }
 
 func (s *oauthSessionStore) claimCommit(state, provider string) bool {
@@ -439,7 +459,7 @@ func (s *oauthSessionStore) claimCommit(state, provider string) bool {
 
 	s.purgeExpiredLocked(now)
 	session, ok := s.sessions[state]
-	if !ok || session.Completed || !isOAuthSessionPendingStatus(session) || session.Committing || session.SIWCCommitting {
+	if !ok || !session.pending() {
 		return false
 	}
 	if provider != "" && !strings.EqualFold(session.Provider, provider) {
@@ -470,7 +490,7 @@ func (s *oauthSessionStore) Cancel(state string) bool {
 
 	s.purgeExpiredLocked(now)
 	session, ok := s.sessions[state]
-	if !ok || session.Completed || !isOAuthSessionPendingStatus(session) || session.Committing || session.SIWCCommitting {
+	if !ok || !session.pending() {
 		return false
 	}
 	if session.SIWC != nil {
@@ -497,7 +517,7 @@ var oauthSessions = newOAuthSessionStore(oauthSessionTTL)
 func RegisterOAuthSession(state, provider string) { oauthSessions.Register(state, provider) }
 
 func RegisterOAuthSessionWithProxy(state, provider, proxyURL string) {
-	oauthSessions.RegisterWithProxy(state, provider, proxyURL)
+	oauthSessions.registerBuiltin(state, provider, proxyURL, oauthFlowUnspecified)
 }
 
 func RegisterPluginOAuthSession(state, provider string, metadata map[string]any) error {
@@ -656,25 +676,20 @@ func ValidateOAuthState(state string) error {
 }
 
 func NormalizeOAuthProvider(provider string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
 	case "anthropic", "claude":
 		return "anthropic", nil
 	case "codex", "openai":
 		return "codex", nil
-	case "gitlab":
-		return "gitlab", nil
 	case "gemini", "google":
 		return "gemini", nil
 	case "antigravity", "anti-gravity":
 		return "antigravity", nil
 	case "xai", "x-ai", "x.ai", "grok":
 		return "xai", nil
-	case "kiro":
-		return "kiro", nil
-	case "github":
-		return "github", nil
-	case "iflow":
-		return "iflow", nil
+	case "cursor", "github", "github-copilot", "gitlab", "iflow", "kilo", "kiro", "qoder":
+		return provider, nil
 	case "devin", "cognition":
 		return "devin", nil
 	case "meta", "muse":
@@ -708,9 +723,8 @@ func NormalizePluginOAuthCallbackProvider(provider string) (string, error) {
 	return trimmed, nil
 }
 
-func normalizeOAuthCallbackProviderForPendingSession(provider, state string) (string, error) {
-	session, ok := oauthSessions.Get(state)
-	if ok && session.Source == oauthSessionSourcePlugin {
+func (session oauthSession) normalizeCallbackProvider(provider string) (string, error) {
+	if session.Source == oauthSessionSourcePlugin {
 		return NormalizePluginOAuthCallbackProvider(provider)
 	}
 	return NormalizeOAuthCallbackProvider(provider)
@@ -730,6 +744,10 @@ func WriteOAuthCallbackFile(authDir, provider, state, code, errorMessage string)
 	return writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessage)
 }
 
+func oauthCallbackFilePath(authDir, provider, state string) string {
+	return filepath.Join(authDir, fmt.Sprintf(".oauth-%s-%s.oauth", provider, state))
+}
+
 func writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessage string) (string, error) {
 	if strings.TrimSpace(authDir) == "" {
 		return "", fmt.Errorf("auth dir is empty")
@@ -742,8 +760,7 @@ func writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessag
 		return "", err
 	}
 
-	fileName := fmt.Sprintf(".oauth-%s-%s.oauth", canonicalProvider, state)
-	filePath := filepath.Join(authDir, fileName)
+	filePath := oauthCallbackFilePath(authDir, canonicalProvider, state)
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		return "", fmt.Errorf("create oauth callback dir: %w", err)
 	}
@@ -782,15 +799,29 @@ func writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessag
 }
 
 func WriteOAuthCallbackFileForPendingSession(authDir, provider, state, code, errorMessage string) (string, error) {
-	canonicalProvider, err := normalizeOAuthCallbackProviderForPendingSession(provider, state)
+	return oauthSessions.writeCallback(authDir, provider, state, code, errorMessage)
+}
+
+func (s *oauthSessionStore) writeCallback(authDir, provider, state, code, errorMessage string) (string, error) {
+	state = strings.TrimSpace(state)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeExpiredLocked(time.Now())
+	session, ok := s.sessions[state]
+	provider, err := session.normalizeCallbackProvider(provider)
 	if err != nil {
 		return "", err
 	}
-	if session, ok := oauthSessions.Get(state); ok && session.SIWC != nil {
+	if ok && session.SIWC != nil {
 		return "", ErrSIWCCallbackRequiresV8
 	}
-	if !IsOAuthSessionPending(state, canonicalProvider) {
+	if !ok || !session.pending() || session.Provider != provider || session.Flow == oauthFlowDevice || session.CallbackWritten {
 		return "", errOAuthSessionNotPending
 	}
-	return writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessage)
+	path, errWrite := writeOAuthCallbackFile(authDir, provider, state, code, errorMessage)
+	if errWrite == nil && session.Flow == oauthFlowBrowser {
+		session.CallbackWritten = true
+		s.sessions[state] = session
+	}
+	return path, errWrite
 }

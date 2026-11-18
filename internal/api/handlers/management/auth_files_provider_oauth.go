@@ -1344,6 +1344,18 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "wait"})
 		return
 	}
+	if prompt := session.Prompt; prompt.URL != "" {
+		if c.GetBool(ConfigV8ContextKey) {
+			c.JSON(http.StatusOK, gin.H{"status": "wait", "url": prompt.URL, "user_code": prompt.UserCode})
+		} else {
+			message := "auth_url|" + prompt.URL
+			if session.Flow == oauthFlowDevice {
+				message = "device_code|" + prompt.URL + "|" + prompt.UserCode
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "error", "error": message})
+		}
+		return
+	}
 	provider := session.Provider
 	isPlugin := session.Source == oauthSessionSourcePlugin
 	metadata := session.Metadata

@@ -420,7 +420,7 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 	case "meta":
 		h.RequestMetaToken(c)
 	default:
-		if !h.ServePluginAuthURL(c) {
+		if !h.ServePluginAuthURL(c) && !h.startPlusOAuthV8(c, provider) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "provider_not_found"})
 		}
 	}
@@ -534,6 +534,10 @@ func (h *Handler) ImportOAuthV8(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
 	case "vertex":
 		h.ImportVertexCredential(c)
+	case "gitlab":
+		h.RequestGitLabPATToken(c)
+	case "iflow":
+		h.RequestIFlowCookieToken(c)
 	default:
 		c.JSON(http.StatusNotFound, gin.H{"error": "provider_not_found"})
 	}

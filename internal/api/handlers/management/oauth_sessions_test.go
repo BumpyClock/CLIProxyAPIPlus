@@ -2,6 +2,8 @@ package management
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,8 +12,62 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
+
+func TestPlusBrowserOAuthDoesNotReplaceAnActiveForwarder(t *testing.T) {
+	store := newOAuthSessionStore(time.Minute)
+	replaceOAuthSessionStoreForTest(t, store)
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+	h := &Handler{cfg: &config.Config{Port: 18318}}
+	begin := func(state string) (func(), bool, int) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/oauth/auth-url?is_webui=true", nil)
+		c.Set(ConfigV8ContextKey, true)
+		closeBrowser, ok := h.beginPlusBrowserOAuth(c, state, "iflow", port)
+		return closeBrowser, ok, w.Code
+	}
+	if _, ok, status := begin("blocked"); ok || status != http.StatusConflict || store.IsPending("blocked", "iflow") {
+		t.Fatalf("occupied port: started=%t, HTTP %d", ok, status)
+	}
+	if err := occupied.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closeFirst, ok, status := begin("first")
+	if !ok {
+		t.Fatalf("first session: HTTP %d", status)
+	}
+	defer closeFirst()
+	if _, ok, status := begin("second"); ok || status != http.StatusConflict || store.IsPending("second", "iflow") {
+		t.Fatalf("overlapping port: started=%t, HTTP %d", ok, status)
+	}
+	client := http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/?state=first", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusFound || !store.IsPending("first", "iflow") {
+		t.Fatalf("first forwarder was disturbed: HTTP %d", response.StatusCode)
+	}
+}
+
+func TestKiroDevicePromptUsesPlainVerificationURIAsFallback(t *testing.T) {
+	got := kiroDevicePrompt(&kiroauth.StartDeviceAuthResponse{
+		VerificationURI: "https://example.test/device",
+		UserCode:        "ABCD",
+	})
+	if want := (oauthPrompt{URL: "https://example.test/device", UserCode: "ABCD"}); got != want {
+		t.Fatalf("Kiro prompt = %+v, want %+v", got, want)
+	}
+}
 
 func TestOAuthSessionStoreCompleteKeepsShortLivedSession(t *testing.T) {
 	store := newOAuthSessionStore(time.Minute)
@@ -303,30 +359,67 @@ func TestClaimOAuthSessionCommitRejectsCancelledCompletedErroredAndMismatchedSes
 	}
 }
 
-func TestOAuthSessionStoreKiroPresentationStatusesRemainCancellableAndSaveable(t *testing.T) {
-	for _, status := range []string{
-		"device_code|https://example.test/verify|ABCD-EFGH",
-		"auth_url|https://example.test/oauth",
+func TestOAuthSessionStoreKiroPromptsRemainCancellableAndSaveable(t *testing.T) {
+	for _, flow := range []struct {
+		kind   oauthFlow
+		prompt oauthPrompt
+	}{
+		{oauthFlowDevice, oauthPrompt{URL: "https://example.test/verify", UserCode: "ABCD-EFGH"}},
+		{oauthFlowBrowser, oauthPrompt{URL: "https://example.test/oauth"}},
 	} {
 		cancelStore := newOAuthSessionStore(time.Minute)
-		cancelStore.Register("kiro-cancel", "kiro")
-		cancelStore.SetError("kiro-cancel", status)
+		cancelStore.registerBuiltin("kiro-cancel", "kiro", "", flow.kind)
+		cancelStore.setPrompt("kiro-cancel", flow.prompt)
 		if !cancelStore.IsPending("kiro-cancel", "kiro") {
-			t.Fatalf("Kiro status %q should remain pending", status)
+			t.Fatal("Kiro should remain pending while the prompt is visible")
 		}
 		if !cancelStore.Cancel("kiro-cancel") {
-			t.Fatalf("Cancel() = false for Kiro status %q, want true", status)
+			t.Fatal("Kiro session should remain cancellable")
 		}
 
 		saveStore := newOAuthSessionStore(time.Minute)
-		saveStore.Register("kiro-save", "kiro")
-		saveStore.SetError("kiro-save", status)
+		saveStore.registerBuiltin("kiro-save", "kiro", "", flow.kind)
+		saveStore.setPrompt("kiro-save", flow.prompt)
 		if !saveStore.claimCommit("kiro-save", "kiro") {
-			t.Fatalf("commit claim failed for Kiro status %q", status)
+			t.Fatal("Kiro commit could not claim the pending session")
 		}
 		if saveStore.Cancel("kiro-save") {
-			t.Fatalf("Cancel() = true after Kiro save began for status %q, want false", status)
+			t.Fatal("Kiro session could be cancelled after committing")
 		}
+	}
+}
+
+func TestPlusOAuthCallbacksFollowRegisteredFlow(t *testing.T) {
+	store := newOAuthSessionStore(time.Minute)
+	dir := t.TempDir()
+	store.registerBuiltin("kiro-device", "kiro", "", oauthFlowDevice)
+	store.registerBuiltin("kiro-browser", "kiro", "", oauthFlowBrowser)
+	if err := store.RegisterPlugin("kiro-plugin", "kiro", nil); err != nil {
+		t.Fatal(err)
+	}
+	write := func(state string) error {
+		_, err := store.writeCallback(dir, "kiro", state, "fixture-code", "")
+		return err
+	}
+	if err := write("kiro-device"); !errors.Is(err, errOAuthSessionNotPending) {
+		t.Fatalf("device callback: %v", err)
+	}
+	store.setPrompt("kiro-device", oauthPrompt{URL: "https://example.test/device", UserCode: "ABCD"})
+	if err := write("kiro-device"); !errors.Is(err, errOAuthSessionNotPending) {
+		t.Fatalf("device callback after prompt: %v", err)
+	}
+	if err := write("kiro-browser"); err != nil {
+		t.Fatal(err)
+	}
+	if err := write("kiro-browser"); !errors.Is(err, errOAuthSessionNotPending) {
+		t.Fatalf("duplicate browser callback: %v", err)
+	}
+	if err := write("kiro-plugin"); err != nil {
+		t.Fatalf("plugin callback: %v", err)
+	}
+	store.Cancel("kiro-plugin")
+	if err := write("kiro-plugin"); !errors.Is(err, errOAuthSessionNotPending) {
+		t.Fatalf("cancelled plugin callback: %v", err)
 	}
 }
 

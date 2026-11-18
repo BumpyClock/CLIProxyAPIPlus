@@ -14,6 +14,45 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
+func TestCopilotQuotaV8UsesOnlyTheRequestedCredential(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	manager := coreauth.NewManager(nil, nil, nil)
+	withToken := &coreauth.Auth{ID: "with-token", Provider: "github-copilot", ProxyURL: proxy.URL, Metadata: map[string]any{"access_token": "fixture-token"}}
+	withoutToken := &coreauth.Auth{ID: "without-token", Provider: "github-copilot"}
+	for _, auth := range []*coreauth.Auth{withToken, withoutToken} {
+		auth.EnsureIndex()
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	router := gin.New()
+	router.GET("/v8", h.GetCopilotQuotaV8)
+	router.GET("/v0", h.GetCopilotQuota)
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/v8?auth_index=" + withToken.Index, http.StatusBadGateway},
+		{"/v8?auth_index=" + withoutToken.Index, http.StatusBadRequest},
+		{"/v8?auth_index=unknown", http.StatusNotFound},
+	} {
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if res.Code != tc.want {
+			t.Fatalf("%s: HTTP %d, want %d", tc.path, res.Code, tc.want)
+		}
+	}
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v0?auth_index=unknown", nil))
+	if res.Code != http.StatusBadGateway && !strings.Contains(res.Body.String(), "copilot token not found") {
+		t.Fatalf("legacy fallback: HTTP %d, body %s", res.Code, res.Body.String())
+	}
+}
+
 func TestResetQuota_UsesAuthIndex(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 

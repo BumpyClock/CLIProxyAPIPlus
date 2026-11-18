@@ -59,6 +59,10 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 		stopForwarderInstance(port, prev)
 	}
 
+	return listenCallbackForwarder(port, provider, targetBase)
+}
+
+func listenCallbackForwarder(port int, provider, targetBase string) (*callbackForwarder, error) {
 	addr := fmt.Sprintf("%s:%d", callbackForwarderListenHost(), port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

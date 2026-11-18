@@ -50,9 +50,9 @@ surface and make future upstream reconciliation harder to verify.
 
 ## Remaining limits
 
-- Plus built-in OAuth, usage snapshots/export/import, and Copilot quota remain
-  v0-only. Core and plugin operations use the native v8 contract. The management
-  reference describes this boundary; native Plus v8 parity is not implemented.
+- Plus built-in OAuth, usage backups and snapshots, and Copilot quota are now
+  exposed in the [v8 management API](management-api-v8.md). These operations
+  still share implementations with v0 compatibility clients.
 - Core duplicates plugin login-entry normalization between management and the
   plugin host. Consolidation remains a follow-up with lifecycle coverage.
 - Imported fallback-chain validation still runs on requests. Moving it to a

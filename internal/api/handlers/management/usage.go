@@ -25,8 +25,8 @@ type usageExportPayload struct {
 }
 
 type usageImportPayload struct {
-	Version int                      `json:"version"`
-	Usage   usage.StatisticsSnapshot `json:"usage"`
+	Version int             `json:"version"`
+	Usage   json.RawMessage `json:"usage"`
 }
 
 func (r usageQueueRecord) MarshalJSON() ([]byte, error) {
@@ -89,7 +89,24 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		return
 	}
 
-	result := h.usageStats.RestoreSnapshot(payload.Usage)
+	var restored usage.StatisticsSnapshot
+	if c.GetBool(ConfigV8ContextKey) {
+		var totals struct {
+			TotalRequests *int64 `json:"total_requests"`
+			TotalTokens   *int64 `json:"total_tokens"`
+		}
+		if errTotals := json.Unmarshal(payload.Usage, &totals); errTotals != nil || totals.TotalRequests == nil || totals.TotalTokens == nil || *totals.TotalRequests < 0 || *totals.TotalTokens < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid usage snapshot"})
+			return
+		}
+	}
+	if len(payload.Usage) != 0 {
+		if errSnapshot := json.Unmarshal(payload.Usage, &restored); errSnapshot != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid usage snapshot"})
+			return
+		}
+	}
+	result := h.usageStats.RestoreSnapshot(restored)
 	snapshot := h.usageStats.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
 		"added":           result.Added,
