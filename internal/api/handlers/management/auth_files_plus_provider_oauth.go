@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -327,11 +328,16 @@ func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
 		return
 	}
 
-	baseURL := strings.TrimSpace(payload.BaseURL)
-	if baseURL == "" {
-		baseURL = gitLabBaseURLFromRequest(nil)
+	baseURL := gitlabauth.NormalizeBaseURL(payload.BaseURL)
+	if c.GetBool(ConfigV8ContextKey) {
+		if strings.TrimSpace(payload.BaseURL) == "" {
+			baseURL = gitLabBaseURLFromRequest(nil)
+		}
+		if errURL := validateGitLabBaseURL(baseURL); errURL != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": errURL.Error()})
+			return
+		}
 	}
-	baseURL = gitlabauth.NormalizeBaseURL(baseURL)
 	pat := strings.TrimSpace(payload.PersonalAccessToken)
 	if pat == "" {
 		pat = strings.TrimSpace(payload.Token)
@@ -341,7 +347,7 @@ func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
 		return
 	}
 
-	authClient := gitlabauth.NewAuthClient(h.cfg)
+	authClient := h.gitLabManagementClient(c)
 
 	user, err := authClient.GetCurrentUser(ctx, baseURL, pat)
 	if err != nil {
@@ -438,7 +444,7 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 	}
 
 	redirectURI := gitlabauth.RedirectURL(gitlabauth.DefaultCallbackPort)
-	authClient := gitlabauth.NewAuthClient(h.cfg)
+	authClient := h.gitLabManagementClient(c)
 	authURL, err := authClient.GenerateAuthURL(baseURL, clientID, redirectURI, state, pkceCodes)
 	if err != nil {
 		log.Errorf("Failed to generate GitLab authorization URL: %v", err)
@@ -530,6 +536,9 @@ func gitLabOAuthClientSettings(c *gin.Context) (baseURL, clientID, clientSecret 
 	clientID = strings.TrimSpace(c.Query("client_id"))
 	clientSecret = strings.TrimSpace(c.Query("client_secret"))
 	if c.GetBool(ConfigV8ContextKey) {
+		if errURL := validateGitLabBaseURL(baseURL); errURL != nil {
+			return "", "", "", errURL
+		}
 		if _, inQuery := c.GetQuery("client_secret"); inQuery {
 			return "", "", "", fmt.Errorf("client_secret must be provided in the request body")
 		}
@@ -554,6 +563,26 @@ func gitLabOAuthClientSettings(c *gin.Context) (baseURL, clientID, clientSecret 
 		return "", "", "", fmt.Errorf("gitlab client_id is required")
 	}
 	return baseURL, clientID, clientSecret, nil
+}
+
+func validateGitLabBaseURL(raw string) error {
+	destination, err := url.Parse(raw)
+	if err != nil || destination.Hostname() == "" || destination.User != nil || destination.RawQuery != "" || destination.Fragment != "" {
+		return fmt.Errorf("invalid gitlab base_url")
+	}
+	host := destination.Hostname()
+	loopback := strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
+	if destination.Scheme != "https" && !(destination.Scheme == "http" && loopback) {
+		return fmt.Errorf("gitlab base_url must use HTTPS outside loopback")
+	}
+	return nil
+}
+
+func (h *Handler) gitLabManagementClient(c *gin.Context) *gitlabauth.AuthClient {
+	if c.GetBool(ConfigV8ContextKey) {
+		return gitlabauth.NewAuthClientWithoutRedirects(h.cfg)
+	}
+	return gitlabauth.NewAuthClient(h.cfg)
 }
 
 func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {

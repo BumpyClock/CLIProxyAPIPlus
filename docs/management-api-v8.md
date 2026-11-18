@@ -206,6 +206,8 @@ response when they become available. GitLab browser authorization uses the serve
 unless the caller supplies provider-specific settings. An alternate `base_url` or
 `client_id` does not inherit the server's client secret. Pass an explicit
 `client_secret` in the POST body, never the query string.
+GitLab login and credential import require HTTPS for non-loopback servers and
+do not follow HTTP redirects with credentials.
 
 Callbacks accept `provider`, `state`, `code`, and `error` as GET query parameters
 or POST JSON fields. POST also accepts `redirect_url` containing the complete

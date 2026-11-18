@@ -90,12 +90,13 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 	}
 
 	var restored usage.StatisticsSnapshot
-	if c.GetBool(ConfigV8ContextKey) {
+	v8 := c.GetBool(ConfigV8ContextKey)
+	if v8 {
 		var totals struct {
 			TotalRequests *int64 `json:"total_requests"`
 			TotalTokens   *int64 `json:"total_tokens"`
 		}
-		if errTotals := json.Unmarshal(payload.Usage, &totals); errTotals != nil || totals.TotalRequests == nil || totals.TotalTokens == nil || *totals.TotalRequests < 0 || *totals.TotalTokens < 0 {
+		if errTotals := json.Unmarshal(payload.Usage, &totals); errTotals != nil || totals.TotalRequests == nil || totals.TotalTokens == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid usage snapshot"})
 			return
 		}
@@ -106,6 +107,10 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 			return
 		}
 	}
+	if v8 && !usageSnapshotCountsValid(restored) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid usage snapshot"})
+		return
+	}
 	result := h.usageStats.RestoreSnapshot(restored)
 	snapshot := h.usageStats.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
@@ -114,6 +119,45 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		"total_requests":  snapshot.TotalRequests,
 		"failed_requests": snapshot.FailureCount,
 	})
+}
+
+func usageSnapshotCountsValid(snapshot usage.StatisticsSnapshot) bool {
+	if !nonnegativeUsageCounts(snapshot.TotalRequests, snapshot.SuccessCount, snapshot.FailureCount, snapshot.TotalTokens) {
+		return false
+	}
+	for _, buckets := range []map[string]int64{snapshot.RequestsByDay, snapshot.RequestsByHour, snapshot.TokensByDay, snapshot.TokensByHour} {
+		for _, count := range buckets {
+			if count < 0 {
+				return false
+			}
+		}
+	}
+	for _, api := range snapshot.APIs {
+		if !nonnegativeUsageCounts(api.TotalRequests, api.TotalTokens, api.FailureCount) {
+			return false
+		}
+		for _, model := range api.Models {
+			if !nonnegativeUsageCounts(model.TotalRequests, model.TotalTokens, model.FailureCount) {
+				return false
+			}
+			for _, detail := range model.Details {
+				tokens := detail.Tokens
+				if !nonnegativeUsageCounts(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens, tokens.CachedTokens, tokens.TotalTokens) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func nonnegativeUsageCounts(counts ...int64) bool {
+	for _, count := range counts {
+		if count < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // GetUsageQueue pops queued usage records from the usage queue.

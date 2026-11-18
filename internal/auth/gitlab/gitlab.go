@@ -101,6 +101,14 @@ func NewAuthClient(cfg *config.Config) *AuthClient {
 	return &AuthClient{httpClient: client}
 }
 
+func NewAuthClientWithoutRedirects(cfg *config.Config) *AuthClient {
+	client := NewAuthClient(cfg)
+	client.httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return client
+}
+
 func NormalizeBaseURL(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {

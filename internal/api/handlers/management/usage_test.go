@@ -109,7 +109,12 @@ func TestV8UsageImportRejectsMalformedSnapshotsWithoutChangingStatistics(t *test
 	stats := usage.NewRequestStatistics()
 	stats.RestoreSnapshot(usage.StatisticsSnapshot{TotalRequests: 5, TotalTokens: 25})
 	h := &Handler{usageStats: stats}
-	for _, body := range []string{`{}`, `{"usage":null}`, `{"usage":{}}`, `{"usage":{"total_requests":0}}`, `{"usage":{"total_requests":-1,"total_tokens":-1}}`} {
+	for _, body := range []string{
+		`{}`, `{"usage":null}`, `{"usage":{}}`, `{"usage":{"total_requests":0}}`,
+		`{"usage":{"total_requests":-1,"total_tokens":-1}}`,
+		`{"usage":{"total_requests":0,"total_tokens":0,"failure_count":-1}}`,
+		`{"usage":{"total_requests":0,"total_tokens":0,"apis":{"fixture":{"models":{"m":{"details":[{"tokens":{"input_tokens":-1}}]}}}}}}`,
+	} {
 		rec := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(rec)
 		ctx.Set(ConfigV8ContextKey, true)
